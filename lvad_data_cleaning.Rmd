@@ -1,0 +1,429 @@
+---
+title: "BTT_LVAD"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+library(knitr)
+opts_chunk$set(comment = NA, prompt = FALSE, cache = FALSE, echo = TRUE,
+                      results = "asis")
+
+library(tidyverse)
+library(haven)
+library(rmdformats)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(gtsummary)
+
+```
+
+
+
+```{r load data}
+
+  cand_thor = read_sas("Downloads/cand_thor2024.sas7bdat") %>%  
+    zap_formats() %>% zap_labels()
+  
+  
+  just_form_hr = read_sas("Downloads/JustFormHR.sas7bdat") %>%  
+    zap_formats() %>% zap_labels()
+  
+  just_form_hr_data_link = read_sas("C:/Users/danielahn/Downloads/JustFormHRDataLink.sas7bdat") %>%  
+    zap_formats() %>% zap_labels()
+  
+  just_form_hr_stat1 =  read_sas("C:/Users/danielahn/Downloads/JustFormHRStat1.sas7bdat") %>%  
+    zap_formats() %>% zap_labels()
+
+  
+  just_form_hr_stat2 =  read_sas("C:/Users/danielahn/Downloads/JustFormHRStat2.sas7bdat") %>%  
+    zap_formats() %>% zap_labels()
+  
+  just_form_hr_stat4 =  read_sas("C:/Users/danielahn/Downloads/JustFormHRStat4.sas7bdat") %>%  
+    zap_formats() %>% zap_labels()
+  
+  risk_strat_data_hr =  read_sas("C:/Users/danielahn/Downloads/RiskStratDataHR.sas7bdat") %>%  
+    zap_formats() %>% zap_labels()
+  
+  thor_support_device =  read_sas("C:/Users/danielahn/Downloads/ThorSupportDevice.sas7bdat") %>%  
+    zap_formats() %>% zap_labels()
+
+
+```
+
+
+```{r}
+#Kenley change
+#Added this--confused--otherwise these tables don't seem to exist
+JustFormHRDataLink = read_sas("Downloads/HRstatjust2403 2/JustFormHRDataLink.sas7bdat", NULL)
+
+JustFormHR = read_sas("Downloads/HRstatjust2403 2/JustFormHR.sas7bdat", NULL) 
+
+RiskStratDataHR = read_sas("Downloads/HRstatjust2403 2/RiskStratDataHR.sas7bdat", NULL) 
+
+JustFormHRStat1 = read_sas("Downloads/HRstatjust2403 2/JustFormHRStat1.sas7bdat", NULL) 
+
+JustFormHRStat2 = read_sas("Downloads/HRstatjust2403 2/JustFormHRStat2.sas7bdat", NULL) 
+
+JustFormHRStat4 = read_sas("Downloads/HRstatjust2403 2/JustFormHRStat4.sas7bdat", NULL)
+
+ThorSupportDevice = read_sas("Downloads/HRstatjust2403 2/ThorSupportDevice.sas7bdat", NULL) 
+
+stathist_thor24 = read_sas("Downloads/stathist_thor24.sas7bdat", NULL) 
+
+cand_thor24 = read_sas("Downloads/cand_thor24.sas7bdat", NULL) 
+
+```
+
+# Link data sets 
+
+```{r link data sets}
+
+just_form_hr_data_link = JustFormHRDataLink
+just_form_hr = JustFormHR
+
+risk_strat_data_hr = RiskStratDataHR %>% 
+  mutate(ChangeDt = floor_date(ChangeDate, unit = "day")) %>%
+  select(-ChangeDate) %>% 
+  full_join(just_form_hr_data_link %>%
+              dplyr::select(-ChangeDate, -InitialFormJustId), by = "WlregAuditId") %>% 
+  mutate(PX_ID = px_id) %>% 
+  dplyr::select(-px_id) %>%
+  
+  # removes entries that have valid WlregAuditId but missing JustId
+  filter(!is.na(JustId)) %>%
+  
+  # there are instances in which two just. forms were submitted on the same day for a
+  # single PX_ID. The time step in this process is one day, so these are removed
+  group_by(PX_ID, ChangeDt) %>% slice_max(JustId) %>% 
+  ungroup() %>% 
+  
+  dplyr::select(-RiskStratId, -WlregAuditId, -ChangeUserId, -ChangeRequestorId,
+         -HemoDataObtained, -HemoDataObtainedOther, -HemoPcwpOrLvedp) %>% 
+  select(-(ends_with("St"))) %>% 
+  select(-(starts_with("CandHist"))) %>%
+  select(-(starts_with("SenData"))) %>%
+  select(-(ends_with("Type"))) %>%
+  select(-(ends_with("Perf"))) %>%
+  relocate(ChangeDt:PX_ID)
+
+
+# right_join to filter out erroneous forms, as above
+just_form_hr_data_link = just_form_hr_data_link %>%
+  select(-ChangeDate) %>% 
+  right_join(risk_strat_data_hr %>% 
+              select(ChangeDt, JustId, PX_ID), by = "JustId")
+
+# right_join to filter out erroneous forms, as above
+just_form_hr = just_form_hr %>% 
+  select(JustId, RequestedCandStatCd, RequestedCandStat_descrip,
+         ExtensionNumber, Exception, ThorSupportDevicePrimary,
+         ThorSupportDeviceSecondary, descrip, AdmittedToHospital, FormEffectiveDt) %>%
+  mutate(listing_description = descrip) %>% 
+  select(-descrip) %>% 
+  right_join(just_form_hr_data_link %>% 
+              select(-WlregAuditId, -InitialFormJustId), by = "JustId")
+
+  # status_just_episode provides same info as stathist_thor, so not including it
+  # # join status episode information by JustId
+  # full_join(status_just_episode %>% select(JustId:EndDate), by = "JustId")
+
+# thor_support_device seems to include many duplicates, include at your own risk
+
+just_form_hr_stat1 = JustFormHRStat1 %>% 
+  select(-ChangeDate) %>%
+  left_join(just_form_hr_data_link %>% 
+              select(JustId, PX_ID, ChangeDt), by = "JustId")
+
+just_form_hr_stat2 = JustFormHRStat2 %>% 
+  select(-ChangeDate) %>%
+  left_join(just_form_hr_data_link %>% 
+              select(JustId, PX_ID, ChangeDt), by = "JustId")
+
+just_form_hr_stat4 = JustFormHRStat4 %>% 
+  select(-ChangeDate) %>%
+  left_join(just_form_hr_data_link %>% 
+              select(JustId, PX_ID, ChangeDt), by = "JustId")
+
+```
+
+# Select relevant cand thor variables
+
+```{r}
+cand_list = cand_thor24 %>% select(PERS_ID, PX_ID, REC_TX_DT, CAN_REM_DT, CAN_REM_CD, CAN_DEATH_DT, PERS_OPTN_DEATH_DT, PERS_SSA_DEATH_DT, CAN_LISTING_CTR_CD, WL_ORG, CAN_LISTING_DT)
+
+```
+
+# Extract lvads from thor support device
+# Merge lvad implant date with candidate data
+```{r}
+
+thor_support_device = ThorSupportDevice %>%
+  mutate(ChangeDt = as.Date(ChangeDate)) %>%
+  left_join(just_form_hr %>% select(ThorSupportDevicePrimary, PX_ID),
+            by = c("DeviceId" = "ThorSupportDevicePrimary")) %>%
+  select(-DeviceId) %>%
+  distinct(.keep_all = TRUE)
+
+lvad_keywords = c("heartmate", "hm", "lionheart", "arrow", "jarvik", "micromed", "debakey", "novacor", "evaheart", "worldheart", "levacor", "reliantheart")
+
+#Durable lvads defined as:
+# devices with the appropriate code
+# devices with "unknown" code but qualifying status 4 by LVAD on that date
+# "unknown" device codes with the name of a durable LVAD in their description
+
+lvads = thor_support_device %>% left_join(just_form_hr_stat4, by = c("PX_ID", "ChangeDt")) %>% filter(VadBrandId %in% c('202', '205', '206', '207', '208', '209', '210', '212', '213', '214', '223', '224', '233', '236', '239', '240', '312', '313', '314', '315', '316', '319', '322', '327', '330', '333', '334') | (VadBrandId == 999 & CriteriaLvadSupport == 1) | (VadBrandId == 999 & grepl(paste(lvad_keywords, collapse = "|"), OtherSpecify, ignore.case = TRUE)))
+
+lvads = lvads %>% select(PX_ID, ImplantDt, VadBrandId, OtherSpecify)
+
+#merge with candidate list
+cand_list = cand_list %>% left_join(lvads) %>% rename("durable_lvad_date" = "ImplantDt") %>%
+  filter(duplicated(PX_ID) == FALSE)
+cand_list
+```
+
+
+# Extract IABP implant date
+# Merge with candidate dataset
+```{r}
+# Iabp implant date defined by the date of their measurements for candidates qualifying status 2 by IABP
+just_form_iabps = just_form_hr_stat2 %>% filter(CriteriaIabpSupport == 1) %>%
+  mutate(
+    iabp_date = coalesce(!!!select(., starts_with("Iabp") & ends_with("Dt")))
+  ) %>% group_by(PX_ID) %>%
+  mutate(
+    iabp_date = as.Date(iabp_date)
+  ) %>% # take their earliest date
+  arrange(PX_ID, iabp_date) %>% slice(1)
+
+#merge with candidate list
+cand_list = cand_list %>% left_join(select(just_form_iabps, PX_ID, iabp_date, IabpWithHemo, ExtDemoContra, ExtMeanPressure, ExtMeanPressureDt, ExtCardiacIndex, ExtCardiacIndexDt, ExtCapWedgePressure, ExtCapWedgePressureDt, ExtSvo2, ExtSvo2Dt)) %>%
+  filter(duplicated(PX_ID) == FALSE)
+
+```
+# Extract impella implant dates
+# Merge with candidate dataset
+```{r}
+# Impellas defined by Percutaneous VAD support code that is defined by an impella or "unknown" code with impella in its description
+impellas = thor_support_device %>% filter(grepl("impella", OtherSpecify, ignore.case = TRUE) | PercuBrandId %in% c(215, 225, 226, 237, 311, 317, 318, 331, 332))
+
+impellas = impellas %>% left_join(just_form_hr_stat2) %>%
+  select(PX_ID, ImplantDt, PercuBrandId, OtherSpecify, CriteriaMcsdEndovasSupp, McsdWithHemo, ExtDemoContra, ExtMeanPressure, ExtMeanPressureDt, ExtCardiacIndex, ExtCardiacIndexDt, ExtCapWedgePressure, ExtCapWedgePressureDt, ExtSvo2, ExtSvo2Dt) %>%
+  filter(CriteriaMcsdEndovasSupp == 1) %>%
+  mutate(PEVAD = case_when(
+    PercuBrandId == 215 ~ "Cardiac Assist Tandem Heart",
+    PercuBrandId == 225 ~ "Abiomed Impella 2.5",
+    PercuBrandId == 226 ~ "Abiomed Impella 5.0",
+    PercuBrandId == 237 ~ "Abiomed Impella CP",
+    grepl("impella", OtherSpecify, ignore.case = TRUE) ~ "Abiomed Impella 5.5")) %>%
+  select(-c("PercuBrandId", "OtherSpecify"))
+  
+
+#merge with candidate dataset
+cand_list = cand_list %>% left_join(impellas) %>% rename("impella_date" = "ImplantDt") %>%
+  filter(duplicated(PX_ID) == FALSE)
+```
+
+```{r}
+cand_list %>% filter((!is.na(iabp_date) & !is.na(impella_date)))
+```
+
+
+# Filter and pivot data by relevant dates
+```{r}
+# Fill all the variables within a PX_ID
+cand_list = cand_list %>% group_by(PX_ID) %>% 
+  fill(REC_TX_DT:impella_date)
+ 
+# Retain only one entry per registration
+cand_list = cand_list %>% slice(1)
+
+# Filter to candidates with an iabp or impella implant within our cohort dates
+# Code fixed by Kenley to add missing parentheses
+cand_list = cand_list %>% filter((!is.na(iabp_date) | !is.na(impella_date)) & (iabp_date >= "2018-10-18" | impella_date >= "2018-10-18") & (iabp_date <= "2023-12-31" | (impella_date <= "2023-12-31"))) %>% 
+  relocate(impella_date, .after = iabp_date) %>% ungroup() %>%
+  mutate(dlvad_eligible = case_when(
+    is.na(ExtDemoContra) & is.na(ExtMeanPressure) & is.na(ExtCardiacIndex) & is.na(ExtCapWedgePressure) & is.na(ExtSvo2) ~ 1,
+    TRUE ~ 0))
+
+#Molly
+# 30 patients have multiple listings, separate and filter out ineligible multi-listed patients
+cand_singles = cand_list %>% group_by(PERS_ID) %>% filter(n() == 1)
+cand_multiples = cand_list %>% group_by(PERS_ID) %>% filter(n() > 1)
+
+
+cand_multiples = cand_multiples %>% mutate(
+  iabp_date = first(iabp_date),
+  impella_date = first(impella_date)
+) %>% mutate(
+  follow_time = case_when(
+    !is.na(iabp_date) ~ as.numeric(CAN_REM_DT - as.Date(iabp_date)),
+    TRUE ~ as.numeric(CAN_REM_DT - as.Date(impella_date))
+  )
+)
+
+#many of them are multilisted as HR and HL, just removed the HLs to reduced down to one listing
+cand_multiples = cand_multiples %>% 
+  filter(WL_ORG == "HR") %>% 
+  #differentiate between sequential (listings dont overlap) and not (listings overlap)
+mutate(
+  sequential = ifelse(CAN_REM_DT <= lead(CAN_LISTING_DT), 1, 0)
+) %>% 
+  fill(sequential, .direction = "down") %>%
+  #want to retain patients whose multi listings dont over lap, patients who were multi listed cause of the HL/HR thing (they will have a na for sequential) or patients who spent their entire follow up listed at their first center
+  filter(sequential == 1 | is.na(sequential) | first(follow_time) >= 42) %>%
+  slice(1)
+#this means only two multi listed patients get removed, because they moved centers within 42 days of device implantation. 
+
+cand_list = rbind(cand_singles, cand_multiples) %>% group_by(PX_ID)
+
+
+#We are including patients with both IABP and impella (if they are implanted on different dates)
+#Code added by Kenley to remove cases with both IABP and impella
+#cand_list = cand_list %>% filter(!(!is.na(iabp_date) & !is.na(impella_date)))
+
+cand_list1 = cand_list %>%
+  mutate(
+    iabp_impella_extension_date = pmin(ExtMeanPressureDt, ExtCardiacIndexDt, ExtCapWedgePressureDt, ExtSvo2Dt, na.rm = TRUE),
+    iabp_impella_extension_date = as.Date(iabp_impella_extension_date)) %>%
+  select(-(starts_with("Ext"))) %>%
+  mutate(death_date = case_when(
+    !is.na(PERS_OPTN_DEATH_DT) ~ PERS_OPTN_DEATH_DT,
+    is.na(PERS_OPTN_DEATH_DT) & !is.na(PERS_SSA_DEATH_DT) ~ PERS_SSA_DEATH_DT,
+    is.na(PERS_OPTN_DEATH_DT) & is.na(PERS_SSA_DEATH_DT) & !is.na(CAN_DEATH_DT) ~ CAN_DEATH_DT)) %>%
+  mutate(durable_lvad_date = case_when(
+    durable_lvad_date < iabp_date | durable_lvad_date < impella_date ~ NA,
+    TRUE ~ durable_lvad_date)) %>%
+  select(-c("CAN_DEATH_DT", "PERS_SSA_DEATH_DT", "PERS_OPTN_DEATH_DT")) 
+
+#Molly
+#add in status data
+cand_list1 = cand_list1 %>% left_join(stathist_thor24 %>% select(PX_ID, CANHX_BEGIN_DT, CANHX_END_DT, CANHX_STAT_CD))
+
+
+#Add in status date, retain status at that date. also keep removal code for distinguishing improved removals vs deterioration
+combined_data <- cand_list1 %>% 
+  pivot_longer(
+    cols = c(REC_TX_DT, CAN_REM_DT, death_date, iabp_date, impella_date, durable_lvad_date, CANHX_BEGIN_DT), 
+    names_to = "unique_event",       
+    values_to = "unique_date"        
+  ) %>%
+  filter(!is.na(unique_date)) %>%
+  mutate(
+    status_fill = if_else(unique_event == "CANHX_BEGIN_DT", as.character(CANHX_STAT_CD), NA_character_)
+  ) %>%
+  group_by(PX_ID, unique_date) %>%
+  summarise(
+    unique_event = paste(unique(unique_event), collapse = ", "),
+    status = paste(unique(status_fill[!is.na(status_fill)]), collapse = ", "),
+    CAN_REM_CD = first(CAN_REM_CD),
+    .groups = "drop"
+  )
+
+combined_data$status[combined_data$status == ""] <- NA
+
+combined_data <- combined_data %>% group_by(PX_ID) %>% arrange(unique_date) %>% 
+  mutate(
+    status = case_when(
+      !is.na(status) ~ status,
+      TRUE ~ lag(status)
+    )
+  )
+
+
+```
+
+
+```{r}
+# Define flag for after implant of each device.
+# Filter to only time periods after their iabp/impella implant
+# The only date that could be before that is lvad date, filter can be ignored if removing those candidates
+iabps_impellas = combined_data %>% group_by(PX_ID) %>% mutate(
+  post_iabp = ifelse(grepl("iabp_date", unique_event), 1, NA),
+  post_impella = ifelse(grepl("impella_date", unique_event), 1, NA)
+) %>% fill(post_iabp:post_impella, .direction = "down") %>% filter(!is.na(post_iabp) | !is.na(post_impella))
+
+#Molly
+#define date when they first got each device
+iabps_impellas = iabps_impellas %>% 
+  mutate(
+    first_iabp = case_when(
+      grepl("iabp_date", unique_event) ~ unique_date,
+      TRUE ~ NA
+    ),
+    first_impella = case_when(
+      grepl("impella_date", unique_event) ~ unique_date,
+      TRUE ~ NA
+    )
+  ) %>%
+  fill(first_iabp:first_impella, .direction = "down")
+# define how much time theyve been on each device
+iabps_impellas = iabps_impellas %>% mutate(
+  iabp_time = as.numeric(case_when(
+    post_iabp == 1 ~ difftime(unique_date, first_iabp, units = "days"),
+    TRUE ~ NA))) %>% 
+  group_by(PX_ID, post_impella) %>% mutate(impella_time = as.numeric(case_when(
+    post_impella == 1 ~ difftime(unique_date, first_impella, units = "days"),
+    TRUE ~ NA)))
+
+#Molly
+#Define status
+iabps_impellas = iabps_impellas %>% mutate(
+  status = case_when(
+    grepl("2110", status) | grepl("1110", status) ~ "1",
+    grepl("2120", status) | grepl("1120", status) ~ "2",
+    grepl("2130", status) | grepl("1130", status) ~ "3",
+    grepl("2140", status) | grepl("1140", status) ~ "4",
+    grepl("2150", status) | grepl("1150", status) ~ "5",
+    grepl("2160", status) | grepl("1160", status) ~ "6",
+    grepl("2999", status) | grepl("1999", status) ~ "Inactive",
+    TRUE ~ NA
+  )
+)
+
+```
+
+```{r}
+#Molly
+#define which device they had first
+iabps_impellas = iabps_impellas %>% 
+  mutate(
+    first_device = case_when(
+      !is.na(first_iabp) & !is.na(first_impella) & first_iabp < first_impella ~ "iabp",
+      !is.na(first_iabp) & !is.na(first_impella) & first_iabp > first_impella ~ "impella",
+      !is.na(first_iabp) ~ "iabp",
+      TRUE ~ "impella"
+    )
+  )
+
+#two patients got impella and iabp on same day, remove them
+iabps_impellas = iabps_impellas %>% filter((iabp_time != impella_time) | is.na(iabp_time) | is.na(impella_time))
+
+#remove post removal outcomes
+iabps_impellas = iabps_impellas %>% mutate(
+  removal = ifelse(grepl("CAN_REM_DT", unique_event), 1, 0)) %>% 
+  mutate(post_removal = cumsum(removal)) %>% 
+  filter(!(post_removal == 1 & !grepl("CAN_REM_DT", unique_event))) 
+
+
+#indicator for lvad
+iabps_impellas = iabps_impellas %>% 
+  mutate(
+    d_lvad = case_when(
+      grepl("durable_lvad_date", unique_event) ~ 1,
+      TRUE ~ NA
+    )
+  ) %>% fill(d_lvad, .direction = "down") %>%
+  fill(status, .direction = "down")
+
+#separate data by which device they had first
+
+
+
+```
+
+
+
+
+
