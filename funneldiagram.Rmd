@@ -1,0 +1,529 @@
+---
+title: "Untitled"
+author: "Daniel Ahn"
+date: "2025-07-19"
+output: html_document
+---
+
+```{r setup}
+
+library(trend)
+
+cand_list_for_fig1 <- cand_thor24 %>% select(PX_ID, REC_TX_DT, CAN_REM_DT, CAN_REM_CD, CAN_DEATH_DT, PERS_OPTN_DEATH_DT, PERS_SSA_DEATH_DT, CAN_LISTING_CTR_CD, WL_ORG, CAN_LISTING_DT, CAN_AGE_IN_MONTHS_AT_LISTING) %>%
+  filter(WL_ORG == "HR" & CAN_AGE_IN_MONTHS_AT_LISTING / 12 >= 18 & (CAN_REM_DT >= as.POSIXct("2018-10-18") & CAN_REM_DT <= as.POSIXct("2023-12-31")) | is.na(CAN_REM_DT)) %>%
+  left_join(stathist_thor24 %>% select(PX_ID, CANHX_BEGIN_DT, CANHX_END_DT, CANHX_STAT_CD), by = "PX_ID") %>%
+  mutate(status = case_when(
+    grepl("2110", CANHX_STAT_CD) | grepl("1110", CANHX_STAT_CD) ~ "1",
+    grepl("2120", CANHX_STAT_CD) | grepl("1120", CANHX_STAT_CD) ~ "2",
+    grepl("2130", CANHX_STAT_CD) | grepl("1130", CANHX_STAT_CD) ~ "3",
+    grepl("2140", CANHX_STAT_CD) | grepl("1140", CANHX_STAT_CD) ~ "4",
+    grepl("2150", CANHX_STAT_CD) | grepl("1150", CANHX_STAT_CD) ~ "5",
+    grepl("2160", CANHX_STAT_CD) | grepl("1160", CANHX_STAT_CD) ~ "6",
+    grepl("2999", CANHX_STAT_CD) | grepl("1999", CANHX_STAT_CD) ~ "Inactive",
+    TRUE ~ NA)) %>% group_by(PX_ID) %>% arrange(CANHX_BEGIN_DT) %>%
+  filter(any(status == 2)) %>%
+  mutate(
+    indexoffirststatus2 = which(status == 2) [1],
+    date_of_first_status2 = nth(CANHX_BEGIN_DT, first(indexoffirststatus2))) %>%
+  filter(row_number() == indexoffirststatus2) %>%
+  left_join(just_form_hr_stat2 %>% select(PX_ID, JustId, CriteriaLvadSupport, CriteriaDurableDevSupport, CriteriaMcsdMalfunction, CriteriaMcsdEndovasSupp, CriteriaIabpSupport, CriteriaVentEpisode), by = "PX_ID") %>%
+  left_join(just_form_hr %>% select(JustId, Exception, listing_description, FormEffectiveDt), by = "JustId") %>%
+  filter(date_of_first_status2 == FormEffectiveDt) %>%
+  mutate(reason_for_status2 = case_when(
+    CriteriaIabpSupport == 1 | CriteriaMcsdEndovasSupp == 1 ~ "Temporary MCS",
+    CriteriaVentEpisode == 1 ~ "Recurrent VT/VF",
+    CriteriaMcsdMalfunction == 1 ~ "MCS Malfunction",
+    Exception == 1 ~ "Exception",
+    TRUE ~ "Other"))
+
+justmcs <- cand_list_for_fig1 %>% filter(reason_for_status2 == "Temporary MCS") %>% left_join(fortable1 %>% select(PX_ID, unique_event)) %>% filter(!is.na(unique_event))
+
+table(cand_list_for_fig1$reason_for_status2)
+
+
+
+
+
+impella_devices = thor_support_device %>% filter(grepl("impella", OtherSpecify, ignore.case = TRUE) | PercuBrandId %in% c(215, 225, 226, 237, 311, 317, 318, 331, 332))
+
+iabp_devices = just_form_hr_stat2 %>%
+  mutate(
+    iabp_date = coalesce(!!!select(., starts_with("Iabp") & ends_with("Dt")))
+  ) %>% group_by(PX_ID) %>%
+  mutate(
+    iabp_date = as.Date(iabp_date)
+  ) %>% # take their earliest date
+  arrange(PX_ID, iabp_date) %>% slice(1) %>% filter(!is.na(iabp_date))
+
+
+  
+```
+
+
+
+
+
+``` {r trends figure}
+
+trendsfigure <- fortable1 %>% mutate(
+  type_of_mcs = case_when(
+    PEVAD == "Abiomed Impella 5.5" ~ "Impella 5.5",
+    mcs_type == "IABP" ~ "IABP",
+    TRUE ~ "Other PEVAD"))
+
+trendsfigureduplicate <- fortable1 %>% mutate(
+  type_of_mcs = "Total")
+
+trends <- rbind(trendsfigure, trendsfigureduplicate) %>% mutate(
+  month = zoo::as.yearmon(mcs_date),
+  tmcs = factor(type_of_mcs,
+                levels = c("IABP", "Impella 5.5", "Other PEVAD", "Total")))
+
+
+
+
+
+              
+
+# exceptionsduringlisting <- exceptionsduringlisting %>% filter(row_number() == 1) %>%
+#   filter(CANHX_BEGIN_DT < as.POSIXct("2022-05-01"))
+# 
+# calculationsfig5 <- exceptionsduringlisting %>% mutate(nlrb = case_when(
+#   CANHX_BEGIN_DT >= as.POSIXct("2016-06-01") & CANHX_BEGIN_DT < as.POSIXct("2019-05-01") ~ "pre-policy",
+#   CANHX_BEGIN_DT >= as.POSIXct("2019-06-01") & CANHX_BEGIN_DT < as.POSIXct("2022-05-01") ~ "post-policy",
+#   TRUE ~ "between"
+# )) %>% dplyr::select("PX_ID", "EXCEPTION", "CANHX_BEGIN_DT", "nlrb",
+#                      "CANHX_END_DT", "monthoflisting", "exceptionwithinmonth") %>%
+#   ungroup() %>% group_by(nlrb, monthoflisting) %>% summarise(monthlylistings = n(), monthlyexceptions = sum(exceptionwithinmonth), na.rm = TRUE) %>%
+#   mutate(exceptionproportion = monthlyexceptions / monthlylistings)
+# 
+# calculationsfig5_addended <- calculationsfig5 %>% filter(nlrb != "between")
+# t.test(exceptionproportion ~ nlrb, data = calculationsfig5_addended)
+# 
+# prep <- calculationsfig5 %>% filter(nlrb == "pre-policy")
+# mean(prep$exceptionproportion)
+# 
+# postp <- calculationsfig5 %>% filter(nlrb == "post-policy")
+# mean(postp$exceptionproportion)
+# 
+# t.test(exceptionproportion ~ nlrb, data = calculationsfig5_addended)
+# 
+# summarise(total_cand = n(), exceptions = sum(REC_EXCEPTION), na.rm = TRUE)
+# 
+# hadexception <- exceptionsduringlisting %>% filter(exceptionwithinmonth == 1) %>% 
+#   mutate(EXCEPTION_STATUS = case_when(
+#     exceptionwithinmonth == 1 ~ "Active Exception"))
+# noexception <- exceptionsduringlisting %>% 
+#   mutate(EXCEPTION_STATUS = case_when(
+#     exceptionwithinmonth == 0 | exceptionwithinmonth == 1 ~ "Total"))
+# hadexception <- data_frame(hadexception)
+# noexception <- data_frame(noexception)
+# f5data <- rbind(hadexception, noexception)
+
+
+
+by_month1 <- trends %>%
+  group_by(month) %>%
+  count(tmcs) %>%
+  mutate(total_per_month = sum(n)) %>%
+  ungroup() %>%
+  mutate(month1 = factor(month),
+         percentage_per_month = 100*n/total_per_month) 
+# policy_switch <- which(levels(by_month1$month1) == "May 2019")
+# pre_policy_start <- which(levels(by_month1$month1) == "Jun 2016")
+# pre_policy_end <- which(levels(by_month1$month1) == "Apr 2019")
+# post_policy_start <- which(levels(by_month1$month1) == "Jun 2020")
+# post_policy_end <- which(levels(by_month1$month1) == "Apr 2022")
+
+fig <- ggplot(by_month1, aes(x = month1, y = n, color = tmcs, group = tmcs)) +
+  geom_line() + 
+  geom_point() +
+  # geom_vline(aes(xintercept = policy_switch, linetype = "Policy Switch")) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+        axis.title.x = element_text(margin = margin(t = 15, r = 0, b = 0, l = 0), size = 20),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        legend.position = "bottom",
+        legend.title = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        legend.margin = margin(t=0, r=0, b=0, l=0, unit = "mm"),
+        legend.direction = "vertical",
+        legend.title.align = 0,
+        panel.background = element_rect(fill = "grey99"),
+        plot.background = element_rect(fill = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(linewidth = 0.5, linetype = "solid", colour = "black")
+  ) +
+  labs(
+    x = "Month",
+    y = "Number of Listings",
+    linetype = "",
+    color = "Type of Temporary MCS"
+  ) +
+  scale_linetype_manual(values = c("dashed", "dotted", "solid")) +
+  guides(colour = guide_legend(nrow = 1))
+  # annotate("text", x = which(levels(by_month1$month1) == "Oct 2017"), y = 9000, label= "Pre-Policy Cohort", size = 20/.pt) +
+  # annotate("text", x = which(levels(by_month1$month1) == "Oct 2020"), y = 9000, label= "Post-Policy Cohort", size = 20/.pt) +
+  # annotate("rect",
+  #          xmin = which(levels(by_month1$month1) == "Jun 2016"),           
+  #          xmax = which(levels(by_month1$month1) == "Apr 2019"),
+  #          ymin = 0, 
+  #          ymax = 10000,  
+  #          alpha = 0.15) +
+  # annotate("rect",
+  #          xmin = which(levels(by_month1$month1) == "Jun 2019"),            
+  #          xmax = which(levels(by_month1$month1) == "Apr 2022"),            
+  #          ymin = 0, 
+  #          ymax = 10000, 
+  #          alpha = 0.15) 
+
+fig
+
+
+trends <- rbind(trendsfigure, trendsfigureduplicate) %>% mutate(
+  month = zoo::as.yearmon(mcs_date),
+  tmcs = factor(type_of_mcs,
+                levels = c("IABP", "Impella 5.5", "Other PEVAD", "Total")))
+
+
+by_month <- trends %>% filter(type_of_mcs != "Total") %>%
+  group_by(month) %>%
+  count(tmcs) %>%
+  mutate(total_per_month = sum(n)) %>%
+  ungroup() %>%
+  mutate(month1 = factor(month),
+         percentage_per_month = n*100/total_per_month) 
+# policy_switch <- which(levels(by_month$month1) == "May 2019")
+# pre_policy_start <- which(levels(by_month$month1) == "Jun 2016")
+# pre_policy_end <- which(levels(by_month$month1) == "Apr 2019")
+# post_policy_start <- which(levels(by_month$month1) == "Jun 2019")
+# post_policy_end <- which(levels(by_month$month1) == "Apr 2022")
+
+fig1 <- ggplot(by_month, aes(x = month1, 
+                             y = percentage_per_month, 
+                             fill = tmcs, 
+                             group = tmcs)) +
+  geom_col(alpha = 0.75, color = "NA") +
+  # geom_vline(aes(xintercept = policy_switch, linetype = "Policy Switch")) + 
+  labs(
+    x = "",
+    y = "% Listings",
+    linetype = "",
+    fill = "Type of Temporary MCS") +
+  # scale_color_custom(name = "Exception Status at Transplant", palette = "simple") +
+  theme(legend.position = "bottom") +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, by = 20)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+        axis.title.x = element_text(margin = margin(t = 15, r = 0, b = 0, l = 0), size = 20),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        legend.position = "none",
+        legend.title = element_text(size = 20),
+        legend.text = element_blank(),
+        legend.margin = margin(t=0, r=0, b=0, l=0, unit = "mm"),
+        legend.direction = "vertical",
+        legend.title.align = 0,
+        panel.background = element_rect(fill = "grey99"),
+        plot.background = element_rect(fill = "white"),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.5, linetype = "solid", colour = "black")
+  ) +
+  scale_linetype_manual(values = c("dashed", "dotted", "solid")) +
+  # scale_fill_custom(name = "Status",
+  #                   breaks = c("Active Exception at Time of Transplant"),
+  #                   palette = "reallysimple") +
+  guides(colour = guide_legend(nrow = 1)) 
+  # annotate("text", x = which(levels(by_month$month1) == "Oct 2017"), y = 95, label= "Pre-Policy Cohort", size = 20/.pt) +
+  # annotate("text", x = which(levels(by_month$month1) == "Oct 2020"), y = 95, label= "Post-Policy Cohort", size = 20/.pt) +
+  # annotate("rect",
+  #          xmin = pre_policy_start,           
+  #          xmax = pre_policy_end,
+  #          ymin = 0, 
+  #          ymax = 100,  
+  #          alpha = 0.15) +
+  # annotate("rect",
+  #          xmin = post_policy_start,            
+  #          xmax = post_policy_end,            
+  #          ymin = 0, 
+  #          ymax = 100, 
+  #          alpha = 0.15) 
+fig1
+
+
+by_month <- by_month %>% filter(tmcs == "Impella 5.5")
+mk.test(by_month$percentage_per_month)
+
+# plot_grid(fig6, fig5,
+#           ncol = 1, nrow = 2,
+#           labels = c("A", "B"))
+
+```
+
+
+
+``` {r hypothetical figure}
+
+cand_list_for_hypofigure <- cand_thor24 %>% select(PX_ID, CAN_INIT_STAT, WL_ORG, CAN_LISTING_DT, CAN_AGE_IN_MONTHS_AT_LISTING) %>%
+  filter(WL_ORG == "HR" & CAN_AGE_IN_MONTHS_AT_LISTING / 12 >= 18 & (CAN_LISTING_DT >= as.POSIXct("2018-10-18") & CAN_LISTING_DT <= as.POSIXct("2023-12-31"))) %>%
+  mutate(status = case_when(
+    grepl("2110", CAN_INIT_STAT) | grepl("1110", CAN_INIT_STAT) ~ "1",
+    grepl("2120", CAN_INIT_STAT) | grepl("1120", CAN_INIT_STAT) ~ "2",
+    grepl("2130", CAN_INIT_STAT) | grepl("1130", CAN_INIT_STAT) ~ "3",
+    grepl("2140", CAN_INIT_STAT) | grepl("1140", CAN_INIT_STAT) ~ "4",
+    grepl("2150", CAN_INIT_STAT) | grepl("1150", CAN_INIT_STAT) ~ "5",
+    grepl("2160", CAN_INIT_STAT) | grepl("1160", CAN_INIT_STAT) ~ "6",
+    grepl("2999", CAN_INIT_STAT) | grepl("1999", CAN_INIT_STAT) ~ "Inactive",
+    TRUE ~ NA)) %>% filter(!is.na(status))
+
+welp <- fortable1 %>% select(PX_ID, date_of_mcs, date_of_first_status2, CAN_LISTING_DT, MCS, high_dose_inotrope, multi_agent_low_dose_inotropes) %>%
+  mutate(
+    inotropes_meeting_status3 = case_when(
+      high_dose_inotrope == 1 | multi_agent_low_dose_inotropes == 1 ~ 1,
+      TRUE ~ 0),
+    listing_time_to_status2 = as.numeric(difftime(CAN_LISTING_DT, date_of_first_status2, units = "days")))
+
+hypofigure <- cand_list_for_hypofigure %>% left_join(welp %>% select(PX_ID, date_of_mcs, date_of_first_status2, inotropes_meeting_status3, listing_time_to_status2), by = "PX_ID") %>% mutate(
+  new_status = case_when(
+    listing_time_to_status2 == 0 & inotropes_meeting_status3 == 0 ~ "3",
+    TRUE ~ status),
+  switch_status = case_when(
+    listing_time_to_status2 == 0 & inotropes_meeting_status3 == 0 ~ "3",
+    TRUE ~ "0"))
+
+
+A <- ggplot(data = hypofigure, aes(x = status)) + 
+  geom_bar(color = "black", fill = "gray", linewidth = 0.3, position = position_stack(reverse = TRUE)) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  labs(x = "", y = "Number of Candidates") +
+  theme(axis.text.x = element_text(size = 18),
+        axis.title.x = element_text(size = 20),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 20)) +
+  scale_fill_manual(name = "", values = c("#C3C1C1")) 
+
+B <- ggplot(data = hypofigure, aes(x = new_status, fill = switch_status)) + 
+  geom_bar(color = "black", linewidth = 0.3, position = position_stack(reverse = TRUE)) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  labs(x = "Status at Listing", y = "Number of Candidates") +
+  theme(axis.text.x = element_text(size = 18),
+        axis.title.x = element_text(size = 20),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        legend.position = "none") +
+  scale_fill_manual(name = "", values = c("gray", "darkorange")) 
+
+
+C <- plot_grid(A, B, ncol = 1, nrow = 2, labels = c("A", "B"))
+
+
+```
+
+``` {r lvad KM}
+
+dLVAD <- fortable1 %>% filter(!is.na(dLVAD)) %>% select(PX_ID, MCS, Outcome, LVAD, durable_lvad_date, CAN_REM_DT, CAN_REM_CD.x) %>%
+  left_join(stathist_thor24 %>% select(PX_ID, CANHX_BEGIN_DT, CANHX_END_DT, CANHX_STAT_CD), by = "PX_ID") %>% rename(CAN_REM_CD = CAN_REM_CD.x) %>%
+  group_by(PX_ID) %>% arrange(CANHX_BEGIN_DT) %>% mutate(
+    CANHX_END_DT = ifelse(is.na(CANHX_END_DT), as.Date("2023-03-31"), CANHX_END_DT),
+    CANHX_END_DT = as.Date(CANHX_END_DT, origin = "1970-01-01"),
+    status = case_when(
+      grepl("2110", CANHX_STAT_CD) | grepl("1110", CANHX_STAT_CD) ~ "1",
+      grepl("2120", CANHX_STAT_CD) | grepl("1120", CANHX_STAT_CD) ~ "2",
+      grepl("2130", CANHX_STAT_CD) | grepl("1130", CANHX_STAT_CD) ~ "3",
+      grepl("2140", CANHX_STAT_CD) | grepl("1140", CANHX_STAT_CD) ~ "4",
+      grepl("2150", CANHX_STAT_CD) | grepl("1150", CANHX_STAT_CD) ~ "5",
+      grepl("2160", CANHX_STAT_CD) | grepl("1160", CANHX_STAT_CD) ~ "6",
+      grepl("2999", CANHX_STAT_CD) | grepl("1999", CANHX_STAT_CD) ~ "Inactive",
+      TRUE ~ NA),
+    index_of_dlvad_episode = which(durable_lvad_date >= CANHX_BEGIN_DT & durable_lvad_date < CANHX_END_DT) [1],
+    index_of_dlvad_episode = ifelse(is.na(index_of_dlvad_episode), (which(durable_lvad_date == CANHX_END_DT) [1]) + 1, index_of_dlvad_episode)) %>% 
+  filter(row_number() >= index_of_dlvad_episode) %>%
+  mutate(firstepisode = ifelse(first(status) == "2", 1, 0),
+         index_of_first_status2 = case_when(
+           firstepisode == 0 ~ which(status == "2") [1],
+           firstepisode == 1 ~ which(status == "2") [2]))
+
+dLVAD.1 <- LVAD %>% filter(all(!is.na(index_of_first_status2))) %>% mutate(date_of_first_status2 = nth(CANHX_BEGIN_DT, first(index_of_first_status2)))
+dLVAD.2 <- LVAD %>% filter(all(is.na(index_of_first_status2))) %>% mutate(date_of_first_status2 = NA)
+
+dLVAD <- rbind(LVAD.1, LVAD.2) %>% mutate(CAN_REM_DT = ifelse(is.na(CAN_REM_CD), last(CANHX_END_DT), CAN_REM_DT),
+                                          CAN_REM_DT = as.Date(CAN_REM_DT, origin = "1970-01-01"),
+                                          status2 = case_when(
+                                            !is.na(date_of_first_status2) ~ 1,
+                                            TRUE ~ 0),
+                                          death_or_status2 = case_when(
+                                            !is.na(date_of_first_status2) | Outcome == "Died" ~ 1,
+                                            TRUE ~ 0),
+                                          FINAL_DATE = case_when(
+                                            !is.na(date_of_first_status2) ~ date_of_first_status2,
+                                            TRUE ~ CAN_REM_DT),
+                                          TIME = as.numeric(difftime(FINAL_DATE, durable_lvad_date, units = "days")),
+                                          TIME_IN_YEARS = TIME / 365.25) %>% slice(1)
+
+km <- Surv(time = dLVAD$TIME_IN_YEARS, event = dLVAD$death_or_status2)
+km_fit <- survfit(km ~ 1, data = dLVAD) # Example: grouping by 'sex'
+
+ggsurvplot(km_fit, 
+           pval = TRUE,        # Display p-value (if comparing groups)  # Display risk table
+           conf.int = TRUE,    # Display confidence intervals
+           title = "Kaplan-Meier Curve",
+           xlab = "Time (Years)",
+           ylab = "Risk of Death/Obtaining Status 2")
+  
+
+
+
+
+```
+
+
+
+``` {r copy}
+
+dLVAD <- fortable1 %>% filter(!is.na(dLVAD)) %>% select(PX_ID, MCS, Outcome, LVAD, durable_lvad_date, CAN_REM_DT, CAN_REM_CD.x) %>%
+  left_join(stathist_thor24 %>% select(PX_ID, CANHX_BEGIN_DT, CANHX_END_DT, CANHX_STAT_CD), by = "PX_ID") %>% rename(CAN_REM_CD = CAN_REM_CD.x) %>%
+  group_by(PX_ID) %>% arrange(CANHX_BEGIN_DT) %>% mutate(
+    CANHX_END_DT = ifelse(is.na(CANHX_END_DT), as.Date("2023-03-31"), CANHX_END_DT),
+    CANHX_END_DT = as.Date(CANHX_END_DT, origin = "1970-01-01"),
+    status = case_when(
+      grepl("2110", CANHX_STAT_CD) | grepl("1110", CANHX_STAT_CD) ~ "1",
+      grepl("2120", CANHX_STAT_CD) | grepl("1120", CANHX_STAT_CD) ~ "2",
+      grepl("2130", CANHX_STAT_CD) | grepl("1130", CANHX_STAT_CD) ~ "3",
+      grepl("2140", CANHX_STAT_CD) | grepl("1140", CANHX_STAT_CD) ~ "4",
+      grepl("2150", CANHX_STAT_CD) | grepl("1150", CANHX_STAT_CD) ~ "5",
+      grepl("2160", CANHX_STAT_CD) | grepl("1160", CANHX_STAT_CD) ~ "6",
+      grepl("2999", CANHX_STAT_CD) | grepl("1999", CANHX_STAT_CD) ~ "Inactive",
+      TRUE ~ NA),
+    index_of_dlvad_episode = which(durable_lvad_date >= CANHX_BEGIN_DT & durable_lvad_date < CANHX_END_DT) [1],
+    index_of_dlvad_episode = ifelse(is.na(index_of_dlvad_episode), (which(durable_lvad_date == CANHX_END_DT) [1]) + 1, index_of_dlvad_episode)) %>% 
+  filter(row_number() >= index_of_dlvad_episode) %>%
+  mutate(
+    CAN_REM_DT = ifelse(is.na(CAN_REM_CD), last(CANHX_END_DT), CAN_REM_DT),
+    CAN_REM_DT = as.Date(CAN_REM_DT, origin = "1970-01-01"),
+    transplant = case_when(
+      CAN_REM_CD == 4 | CAN_REM_CD == 14 ~ 1,
+      TRUE ~ 0),
+    TIME = as.numeric(difftime(CAN_REM_DT, durable_lvad_date, units = "days")),
+    TIME_IN_WEEKS = TIME / 7) %>% slice(1)
+
+
+km <- Surv(time = dLVAD$TIME_IN_YEARS, event = dLVAD$transplant)
+km_fit <- survfit(km ~ 1, data = dLVAD) # Example: grouping by 'sex'
+
+ggsurvplot(km_fit,        # Display p-value (if comparing groups)  # Display risk table
+           conf.int = TRUE,    # Display confidence intervals
+           title = "Kaplan-Meier Curve",
+           xlab = "Time (Years)",
+           ylab = "Risk of Transplant")
+
+```
+
+
+``` {r cif graph}
+
+
+cif_data <- fortable1 %>% select(PX_ID, MCS, Outcome, LVAD, mcs_date, durable_lvad_date, impella_time, iabp_time) %>%
+  mutate(
+    new_outcome = case_when(
+      !is.na(LVAD) ~ 1,
+      Outcome == "Transplanted" & is.na(LVAD) ~ 2,
+      (Outcome == "Died" | Outcome == "Delisted, Deteriorated") & is.na(LVAD) ~ 3,
+      TRUE ~ 0),
+    new_outcome = as.factor(new_outcome),
+    TIME = case_when(
+      MCS == "PEVAD" & new_outcome != 1 ~ impella_time,
+      MCS == "IABP" & new_outcome != 1 ~ iabp_time,
+      TRUE ~ as.numeric(difftime(durable_lvad_date, mcs_date, units = "days"))))
+
+
+levels(cif_data$new_outcome) = c("Censored", "Durable LVAD", "Transplant", "Death or Deterioration")
+
+options("ggsurvfit.switch-color-linetype" = TRUE)
+
+custom_colors <- c(
+  `dark red` = "#660000",
+  `bright red` = "#b81d2e",
+  `orange` = "#ae6320",
+  `yellow`= "#b8a370",
+  `green` = "#3ba9a9",
+  `white` = "#FFFFFF",
+  `grey` = "#C3C1C1",
+  `light green` = "#8dd9d7",
+  `light yellow` = "#ddd3bb",
+  `light orange` = "#e49f62",
+  `space sparkle`= "#496061",
+  `violet` = "#7A3DE3",
+  `sandy brown` = "#FA9E4D")
+
+custom_colors <- c("black", "#FA9E4D", "#660000") 
+
+
+cif_plot <- survfit2(Surv(TIME, new_outcome) ~ 1, data = cif_data) %>%
+  ggcuminc(
+    outcome = c("Durable LVAD", "Transplant", "Death or Deterioration"),
+    linewidth = 1.) + 
+  add_confidence_interval(alpha = 0.5) +
+  add_risktable(size = 7, theme = theme_risktable_default(plot.title.size = 18, axis.text.y.size = 18)) +
+  coord_cartesian(xlim = c(0, 42)) +
+  scale_x_continuous(breaks = c(0, 7, 14, 21, 28, 35, 42)) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    labels = scales::percent, 
+    expand = c(0.01, 0)
+  ) +
+  xlab("Days after MCS Placement") +
+  theme_classic() +
+  #guides(linetype=guide_legend(nrow = 1, byrow=TRUE)) +
+  #guides(color = guide_legend(nrow = 1, byrow=TRUE)) +
+  scale_color_manual(values = custom_colors) +
+  theme(plot.title = element_text(size = 18),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 18),
+        axis.title.x = element_text(size = 20),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 20))
+
+
+
+cifresults <- cuminc(ftime = cif_data$TIME, fstatus = cif_data$new_outcome)
+print(cifresults)
+
+cif_6weeks <- timepoints(cifresults, 42)
+estimates <- cif_6weeks$est
+variances <- cif_6weeks$var
+
+# Calculate standard errors
+std_errors <- sqrt(variances)
+
+# Calculate 95% confidence intervals (for a specific event, e.g., event 1)
+z_score <- 1.96 # For 95% confidence
+
+# Assuming you want the CI for the first event (e.g., status == 1) and group "A"
+# (adjust indices as needed based on your cuminc output and groups)
+
+ci_estimate_event1 <- estimates["1 Durable LVAD", ] # Assuming "1 A" represents event 1 in group A
+ci_se_event1 <- std_errors["1 Durable LVAD", ]
+
+lower_ci_event1 <- ci_estimate_event1 * exp(-z_score * ci_se_event1 / (ci_estimate_event1 * log(ci_estimate_event1)))
+upper_ci_event1 <- ci_estimate_event1 * exp(z_score * ci_se_event1 / (ci_estimate_event1 * log(ci_estimate_event1)))
+
+ci_estimate_event2 <- estimates["1 Death/Deterioration", ] # Assuming "1 A" represents event 1 in group A
+ci_se_event2 <- std_errors["1 Death/Deterioration", ]
+
+lower_ci_event2 <- ci_estimate_event2 * exp(-z_score * ci_se_event2 / (ci_estimate_event2 * log(ci_estimate_event2)))
+upper_ci_event2 <- ci_estimate_event2 * exp(z_score * ci_se_event2 / (ci_estimate_event2 * log(ci_estimate_event2)))
+
+
+
+
+
+
+```
