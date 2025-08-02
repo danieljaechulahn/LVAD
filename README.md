@@ -1,1 +1,1 @@
-
+This is a Github repository of all of the code written to perform all data cleaning, statistical analysis, and table/figure generation for the paper "Low Rates of Inotropic Support and Durable Left Ventricular Assist Device Placement among Status 2 Heart Transplant Candidates with Temporary Mechanical Circulatory Support." This code requires files from the SRTR SAF as well as heart status justification files. The version of the SAF should be at least the 2024 Q1. 
