@@ -1,0 +1,935 @@
+---
+title: "lvad_bridge_sankey"
+output: html_document
+date: "2025-06-11"
+---
+
+```{r}
+
+iabps = iabps_impellas %>% filter(first_device == "iabp") 
+impellas = iabps_impellas %>% filter(first_device == "impella")
+
+iabps$unique_date <- as.Date(iabps$unique_date, origin = "1970-01-01")
+impellas$unique_date <- as.Date(impellas$unique_date, origin = "1970-01-01")
+
+#this code ensures that the candidates with MCS we've identified actually had status 2 while waitlisted
+iabps <- iabps %>% group_by(PX_ID) %>% arrange(unique_date) %>% filter(any(status == 2))
+impellas <- impellas %>% group_by(PX_ID) %>% arrange(unique_date) %>% filter(any(status == 2))
+
+iabps1 <- iabps %>%
+  mutate(
+    indexoffirststatus2 = which(status == 2) [1], #demarcates first observation when status 2 was achieved
+    indexoffirststatus1 = which(status == 1) [1], #demarcates first observation when status 1 was achieved
+    date_of_first_status2 = nth(unique_date, first(indexoffirststatus2)), #demarcates date when status 2 was first achieved
+    date_of_first_status1 = ifelse(!is.na(indexoffirststatus1), nth(unique_date, first(indexoffirststatus1)), indexoffirststatus1),
+    date_of_first_status1 = as.Date(date_of_first_status1, origin = "1970-01-01"),
+    list_time = as.numeric(difftime(unique_date, date_of_first_status2, units = "days")), #now we calculate time starting with date of first status 2 as the origin, not date of IABP or PEVAD placement
+    time_from_mcs_to_status2 = as.numeric(difftime(date_of_first_status2, first(unique_date), units = "days")),
+    time_from_status2_to_status1 = as.numeric(difftime(date_of_first_status1, date_of_first_status2, units = "days")),
+    #status_at_mcs_placement = first(status), #first observation 
+    list_time_for_status1 = case_when(
+      !is.na(indexoffirststatus1) & (time_from_status2_to_status1 > 0 & time_from_status2_to_status1 <= 42) ~ 1,
+      TRUE ~ NA))
+      
+impellas1 <- impellas %>% #following code is the exact same as above, but just for the PEVADs
+  mutate(
+    indexoffirststatus2 = which(status == 2) [1],
+    indexoffirststatus1 = which(status == 1) [1],
+    date_of_first_status2 = nth(unique_date, first(indexoffirststatus2)),
+    date_of_first_status1 = ifelse(!is.na(indexoffirststatus1), nth(unique_date, first(indexoffirststatus1)), indexoffirststatus1),
+    date_of_first_status1 = as.Date(date_of_first_status1, origin = "1970-01-01"),
+    list_time = as.numeric(difftime(unique_date, date_of_first_status2, units = "days")),
+    time_from_mcs_to_status2 = as.numeric(difftime(date_of_first_status2, first(unique_date), units = "days")),
+    time_from_status2_to_status1 = as.numeric(difftime(date_of_first_status1, date_of_first_status2, units = "days")),
+    #status_at_mcs_placement = first(status),
+    list_time_for_status1 = case_when(
+      !is.na(indexoffirststatus1) & (time_from_status2_to_status1 > 0 & time_from_status2_to_status1 <= 42) ~ 1,
+      TRUE ~ NA))
+
+#isolates all observations that occur by the 42 day mark after status 2 is first obtained
+iabps_42 <- iabps1 %>% filter(list_time <= 42) 
+
+impellas_42 <- impellas1 %>% filter(list_time <= 42)
+
+```
+
+
+```{r}
+#one entry per patient (at their last date within the follow up period)
+
+iabps_42_reduced <- iabps_42 %>% 
+  group_by(PX_ID) %>% arrange(unique_date) %>%
+  slice_tail(n = 1) #%>% filter(unique_event != "CANHX_BEGIN_DT")
+
+# iabps_42_nonunique <- iabps1 %>% group_by(PX_ID) %>% arrange(unique_date) %>% 
+#   mutate(list_time_next = lead(list_time),
+#          list_time_prev = lag(list_time)) %>%
+#   filter((list_time <= 42 & list_time_next >= 42) | (list_time >= 42 & list_time_prev <= 42)) %>%
+#   filter(first(unique_event == "CANHX_BEGIN_DT")) %>%
+#   slice_tail(n = 1) %>% select(-c("list_time_next", "list_time_prev"))
+# 
+# iabps_42_reduced <- rbind(iabps_42_unique, iabps_42_nonunique)
+
+impellas_42_reduced <- impellas_42 %>% 
+  group_by(PX_ID) %>% arrange(unique_date) %>%
+  slice_tail(n = 1) #%>% filter(unique_event != "CANHX_BEGIN_DT")
+
+# impellas_42_nonunique <- impellas1 %>% group_by(PX_ID) %>% arrange(unique_date) %>% 
+#   mutate(list_time_next = lead(list_time),
+#          list_time_prev = lag(list_time)) %>%
+#   filter((list_time <= 42 & list_time_next >= 42) | (list_time >= 42 & list_time_prev <= 42)) %>%
+#   filter(first(unique_event == "CANHX_BEGIN_DT")) %>%
+#   slice_tail(n = 1) %>% select(-c("list_time_next", "list_time_prev"))
+# 
+# impellas_42_reduced <- rbind(impellas_42_unique, impellas_42_nonunique)
+
+```
+
+
+```{r}
+
+#define device and outcomes for sankey. Durable LVAD cannot be an outcome in the Sankey because that assumes everyone who got a durable LVAD was just on the waitlist by 42 days. This ignores candidates who achieved other outcomes like transplant after getting a dLVAD. dLVAD is now an intermediary node. 
+iabps_42_reduced = iabps_42_reduced %>% mutate(
+  MCS = "IABP",
+  Outcome = case_when(
+    grepl("REC_TX_DT", unique_event) ~ "Transplanted",
+    grepl("death_date", unique_event) ~ "Died",
+    grepl("CAN_REM_DT", unique_event) & CAN_REM_CD == 12 ~ "Delisted, Improved",
+    grepl("CAN_REM_DT", unique_event) & CAN_REM_CD == 13 ~ "Delisted, Deteriorated",
+    grepl("CAN_REM_DT", unique_event) ~ "Delisted, Other",
+    #status == 1 ~ "Upgraded to Status 1",
+    #d_lvad == 1 ~ "Durable LVAD",
+    #is.na(impella_time) ~ "Extended IABP Support",
+    #TRUE ~ "Extended Percutaneous VAD Support",
+    TRUE ~ "Remains on Waitlist"))
+
+impellas_42_reduced = impellas_42_reduced %>% mutate(
+  MCS = "PEVAD",
+  Outcome = case_when(
+    grepl("REC_TX_DT", unique_event) ~ "Transplanted",
+    grepl("death_date", unique_event) ~ "Died",
+    grepl("CAN_REM_DT", unique_event) & CAN_REM_CD == 12 ~ "Delisted, Improved",
+    grepl("CAN_REM_DT", unique_event) & CAN_REM_CD == 13 ~ "Delisted, Deteriorated",
+    grepl("CAN_REM_DT", unique_event) ~ "Delisted, Other",
+    #d_lvad == 1 ~ "Durable LVAD",
+    #status == 1 ~ "Upgraded to Status 1",
+    #is.na(iabp_time) ~ "Extended Percutaneous VAD Support",
+    #TRUE ~ "Extended IABP Support",
+    TRUE ~ "Remains on Waitlist"))
+
+full_data <- rbind(iabps_42_reduced, impellas_42_reduced) %>% group_by(PX_ID) %>% arrange(unique_date) %>% filter(n() == 1) %>%
+  filter(!is.na(status)) %>%
+  mutate(dLVAD = ifelse(d_lvad == 1, "Durable LVAD", NA))
+
+#calculate amount of time it takes from getting status 2 to durable LVAD. Just for safety, filter out any candidates who could have had a durable LVAD after temporary MCS placement but before Status 2 was obtained
+full_data <- full_data %>% left_join(cand_list %>% select(PX_ID, durable_lvad_date), by = "PX_ID") %>%
+  mutate(time_from_status2_to_lvad = as.numeric(difftime(durable_lvad_date, date_of_first_status2, units = "days"))) %>% 
+  filter(is.na(time_from_status2_to_lvad) | time_from_status2_to_lvad >= 0)
+
+#This captures just the patients who received a durable LVAD and calculates median time it took to go from Status 2 to durable LVAD
+justlvad <- full_data %>% filter(dLVAD == "Durable LVAD") 
+median(justlvad$time_from_status2_to_lvad)
+
+#This captures just the patients who were upgraded to Status 1 
+upgradedtostatus1 <- full_data %>% filter(!is.na(list_time_for_status1)) %>% 
+  left_join(just_form_hr_stat1 %>% select(PX_ID, JustId, CriteriaEcmoSupport, CriteriaBivadSupport, CriteriaMcsdSupport, VentricularEpisode), by = "PX_ID") %>%
+  left_join(just_form_hr %>% select(JustId, Exception, listing_description, FormEffectiveDt), by = "JustId") %>%
+  filter(date_of_first_status1 == FormEffectiveDt) %>%
+  mutate(reason_for_status1 = case_when(
+    CriteriaEcmoSupport == 1 ~ "ECMO",
+    CriteriaBivadSupport == 1 ~ "BIVAD",
+    Exception == 1 ~ "Exception",
+    TRUE ~ "MCSD + Ventricular Arrhythmia"))
+
+table(upgradedtostatus1$reason_for_status1)
+  
+
+#This calculates the median time it took to go from Status 2 to durable LVAD
+table(upgradedtostatus1$MCS)
+median(upgradedtostatus1$time_from_status2_to_status1)
+
+
+```
+
+
+
+```{r}
+#Molly
+#3 column plot, can ignore
+#library(ggsankey)
+# iabps_total = full_join(iabps_28_reduced, iabps_42_reduced)
+# impellas_total = full_join(impellas_28_reduced, impellas_42_reduced)
+# 
+# full_data = rbind(iabps_total, impellas_total)
+# 
+# full_data
+# full_data = full_data %>% mutate(
+#   Outcome_42 = case_when(
+#     Outcome_28 == Outcome_42 ~ NA,
+#     TRUE ~ Outcome_42
+#   )
+# )
+# 
+# full_data = full_data %>% 
+#   mutate(
+#     Outcome_28 = case_when(
+#       Outcome_28 == "Transplanted" ~ "Transplanted ",
+#       Outcome_28 == "Died" ~ "Died ",
+#       Outcome_28 == "Delisted, Improved" ~ "Delisted, Improved ",
+#       Outcome_28 == "Delisted, Deteriorated" ~ "Delisted, Deteriorated ",
+#       Outcome_28 == "Delisted, other" ~ "Delisted, other ",
+#       Outcome_28 == "Upgraded to Status 1" ~ "Upgraded to Status 1 ",
+#       Outcome_28 == "Dischargeable LVAD" ~ "Dischargeable LVAD  ",
+#       Outcome_28 == "Extended Percutaneous VAD Support" ~ "Extended Percutaneous VAD Support ",
+#       TRUE ~ "Extended IABP Support "
+#     )
+#   )
+# 
+# data_for_sankey = full_data %>%
+#   ungroup() %>%
+#   make_long(Mechanical_Circulatory_Support, Outcome_28, Outcome_42) 
+# 
+# data_for_sankey = data_for_sankey %>% filter(!is.na(node))
+# ctr_plot <- data_for_sankey %>%
+#   dplyr::group_by(node)%>%
+#   tally() %>% 
+#   filter(!is.na(node))
+# 
+# data_for_sankey <- merge(data_for_sankey,
+#              ctr_plot, 
+#              by.x = 'node', 
+#              by.y = 'node', 
+#              all.x = TRUE)
+# 
+# 
+# 
+# sankey_plot <- ggplot(data_for_sankey, aes(x = x,                        
+#                      next_x = next_x,                                     
+#                      node = node,
+#                      next_node = next_node,        
+#                      fill = factor(node),
+#                      label = paste0(node, " = ", n))) +
+#   geom_sankey(flow.alpha = 0.5,
+#                       node.color = "black",
+#                       show.legend = TRUE)+ 
+#   geom_sankey_label(color = "black", fill = "white") +
+#   theme_bw() + 
+#   theme(legend.position = 'none', 
+#         axis.title = element_blank(),
+#         axis.text.y = element_blank(),
+#         axis.ticks = element_blank(),
+#         panel.grid = element_blank(),
+#         axis.text = element_text(size = 10)) + 
+#   labs(fill = 'Nodes', title = 'Outcomes within 28 Days after IABP and pVAD Implantation')
+# 
+# sankey_plot
+```
+
+```{r figure 2}
+#Sankey diagram
+data_for_sankey = full_data %>%  
+  select(PX_ID, MCS, dLVAD, Outcome) %>%
+  ungroup() %>%
+  make_long(MCS, dLVAD, Outcome) %>%
+  mutate(n = row_number(),
+         group = ceiling(n / 3)) %>%
+  select(-c("n")) %>% group_by(group) %>%
+  mutate(has_lvad_as_outcome = ifelse(first(is.na(next_node)), 0, 1)) %>% 
+  mutate(
+    next_x1 = case_when(
+      has_lvad_as_outcome == 0 ~ lead(next_x),
+      TRUE ~ next_x),
+    next_node1 = case_when(
+      has_lvad_as_outcome == 0 ~ lead(next_node),
+      TRUE ~ next_node)) %>%
+  select(-c("next_x", "next_node", "has_lvad_as_outcome")) %>%
+  rename(next_x = next_x1,
+         next_node = next_node1)
+
+data_for_sankey = data_for_sankey %>% filter(!is.na(node))
+
+ctr_plot <- data_for_sankey %>%
+  dplyr::group_by(node)%>%
+  tally() %>% filter(!is.na(node))
+
+data_for_sankey <- merge(data_for_sankey,
+             ctr_plot, 
+             by.x = 'node', 
+             by.y = 'node', 
+             all.x = TRUE)
+
+sankey_plot <- ggplot(data_for_sankey, aes(x = x,                        
+                     next_x = next_x,                                     
+                     node = node,
+                     next_node = next_node,        
+                     fill = factor(node),
+                     label = paste0(node, " = ", n))) +
+  geom_sankey(flow.alpha = 0.5,
+                      node.color = "black",
+                      show.legend = TRUE)+ 
+  geom_sankey_label(color = "black", fill = "white") +
+  theme_bw() + 
+  theme(legend.position = 'none', 
+        axis.title = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 10)) + 
+  labs(fill = 'Nodes', title = 'Outcomes within 6 Weeks after Receipt of Status 2 Following IABP/PEVAD Implantation') +
+  scale_x_discrete(labels = c("Temporary MCS", "Durable LVAD", "Outcome within 6 Weeks"))
+
+
+sankey_plot
+```
+
+```{r}
+#Molly
+#Updated 28 day version
+# full_data = rbind(iabps_28_reduced, impellas_28_reduced)
+# 
+# 
+# 
+# data_for_sankey = full_data %>%
+#   ungroup() %>%
+#   make_long(Mechanical_Circulatory_Support, Outcome_28) 
+# 
+# data_for_sankey = data_for_sankey %>% filter(!is.na(node))
+# ctr_plot <- data_for_sankey %>%
+#   dplyr::group_by(node)%>%
+#   tally() %>% 
+#   filter(!is.na(node))
+# 
+# data_for_sankey <- merge(data_for_sankey,
+#              ctr_plot, 
+#              by.x = 'node', 
+#              by.y = 'node', 
+#              all.x = TRUE)
+# 
+# 
+# 
+# sankey_plot <- ggplot(data_for_sankey, aes(x = x,                        
+#                      next_x = next_x,                                     
+#                      node = node,
+#                      next_node = next_node,        
+#                      fill = factor(node),
+#                      label = paste0(node, " = ", n))) +
+#   geom_sankey(flow.alpha = 0.5,
+#                       node.color = "black",
+#                       show.legend = TRUE)+ 
+#   geom_sankey_label(color = "black", fill = "white") +
+#   theme_bw() + 
+#   theme(legend.position = 'none', 
+#         axis.title = element_blank(),
+#         axis.text.y = element_blank(),
+#         axis.ticks = element_blank(),
+#         panel.grid = element_blank(),
+#         axis.text = element_text(size = 10)) + 
+#   labs(fill = 'Nodes', title = 'Outcomes within 28 Days after IABP and pVAD Implantation')
+# 
+# sankey_plot
+
+
+```
+
+
+```{r}
+
+#Molly
+#Get back to original data structure (entry for all time periods up to 28 days)
+# reduced_data = rbind(iabps_42, impellas_42) %>% ungroup()
+# 
+# #Define when patient gained status 1, when they were removed for improved condition vs other reason
+# reduced_data = reduced_data %>% 
+#   mutate(
+#     unique_event = case_when(
+#       grepl("CANHX_BEGIN_DT", unique_event) & status == 1 ~ paste0(unique_event, ", status_1_date"),
+#       TRUE ~ unique_event
+#     ),
+#     unique_event = case_when(
+#       grepl("CAN_REM_DT", unique_event) & CAN_REM_CD == 12 ~ paste0(unique_event, ", remove_improve_date"),
+#       TRUE ~ unique_event
+#     ),
+#     unique_event = case_when(
+#       grepl("CAN_REM_DT", unique_event) & !(CAN_REM_CD %in% c(4,8,12)) ~ paste0(unique_event, ", remove_other_date"),
+#       TRUE ~ unique_event
+#     ))
+#   
+# #take out some redundant date info
+# reduced_data = reduced_data %>% mutate(
+#   unique_event =   gsub(", CANHX_BEGIN_DT", "", unique_event)
+# ) %>% mutate(
+#   unique_event =   gsub("CANHX_BEGIN_DT, ", "", unique_event)
+# )
+# 
+# #rename variables
+# #take latest date (ex, take latest date a patient had status 1)
+# newlist = reduced_data %>% select(c("PX_ID", "unique_date", "unique_event")) %>%
+#   pivot_wider(names_from = unique_event, 
+#               values_from = unique_date,
+#               values_fn = ~max(.x, na.rm = TRUE),
+#               names_expand = TRUE) %>%
+#   rename("status_date" = "CANHX_BEGIN_DT") %>%
+#   rename("transplant_dt" = "REC_TX_DT, CAN_REM_DT") %>%
+#   rename("death_dt" = "CAN_REM_DT, death_date") %>%
+#   rename("remove_improve_date" = "CAN_REM_DT, remove_improve_date") %>%
+#   rename("remove_other_date" = "CAN_REM_DT, remove_other_date") %>%
+#   rename("impella_transplant_dt" = "REC_TX_DT, CAN_REM_DT, impella_date") %>%
+#   rename("transplant_death_dt" = "REC_TX_DT, CAN_REM_DT, death_date") %>%
+#   mutate(iabp_date = pmax(iabp_date, `iabp_date, status_1_date`, na.rm = T)) %>%
+#   mutate(impella_date = pmax(impella_date, impella_transplant_dt, `impella_date, status_1_date`, na.rm = T)) %>%
+#   mutate(death_dt = pmax(death_dt, `CAN_REM_DT, death_date, remove_other_date`, na.rm = T)) %>%
+#   mutate(durable_lvad_date = pmax(durable_lvad_date, `durable_lvad_date, status_1_date`, na.rm = T)) %>%
+#   #remove extra variables
+#   select(-c(impella_transplant_dt, `durable_lvad_date, status_1_date`, `iabp_date, status_1_date`, `impella_date, status_1_date`, `CAN_REM_DT, death_date, remove_other_date`)) %>%
+#   #only want to count them as status 1 if they didn't have a later status update that downgraded them
+#   mutate(status_1_date = case_when(
+#     status_date >= status_1_date ~ NA,
+#     TRUE ~ status_1_date
+#   )) %>%
+#   mutate(mcs_date = pmin(iabp_date, impella_date, na.rm = TRUE)) %>%
+#   group_by(PX_ID) %>%
+#   mutate(mcs_type = case_when(
+#     !is.na(first(iabp_date)) ~ "IABP",
+#     TRUE ~ "pVAD")) %>%
+#     ungroup() %>% 
+#   mutate(outcome_date = case_when(
+#     if_any(c(transplant_dt, transplant_death_dt, death_dt, status_1_date, durable_lvad_date, remove_improve_date, remove_other_date), is.na) ~ pmax(transplant_dt, transplant_death_dt, death_dt, status_1_date, durable_lvad_date, remove_improve_date, remove_other_date, na.rm = T),
+#     TRUE ~ mcs_date + 42)) %>%
+#     mutate(
+#       outcome = case_when(
+#         transplant_dt == outcome_date | transplant_death_dt == outcome_date ~ "Transplanted",
+#         durable_lvad_date == outcome_date ~ "LVAD",
+#         death_dt == outcome_date ~ "Died",
+#         status_1_date == outcome_date ~ "Upgraded to Status 1",
+#         remove_other_date == outcome_date ~ "Delisted, Other",
+#         remove_improve_date == outcome_date ~ "Delisted, Improved",
+#         TRUE ~ "On Waitlist")) %>%
+#    left_join(stathist_thor24 %>% select(PX_ID, CANHX_BEGIN_DT, CANHX_END_DT, CANHX_STAT_CD), by = "PX_ID") %>%
+#    group_by(PX_ID) %>% arrange(PX_ID, CANHX_BEGIN_DT) %>% 
+#    mutate(CANHX_END_DT = case_when(
+#      is.na(CANHX_END_DT) ~ ymd("2024-03-31"),
+#      TRUE ~ CANHX_END_DT))
+
+```
+
+THIS IS WHERE MOLLY STOPPED
+
+
+```{r data cleaning for table1}
+#newlist <- newlist %>%
+#   mutate(standby = case_when(
+#     any(mcs_date >= status_date & mcs_date <= CANHX_END_DT) ~ 0,
+#     TRUE ~ 1))
+# 
+# newlist1 <- newlist %>%
+#   filter(standby == 0) %>%
+#   filter(row_number() >= min(which(mcs_date >= status_date & mcs_date <= CANHX_END_DT))) %>%
+#   mutate(standby1 = case_when(
+#     any(outcome_date >= status_date & outcome_date <= CANHX_END_DT) ~ 0,
+#     TRUE ~ 1))
+# 
+# newlist1.1 <- newlist1 %>%
+#   filter(standby1 == 0) %>%
+#   filter(row_number() <= min(which(outcome_date >= status_date & outcome_date <= CANHX_END_DT)))
+# 
+# newlist1.2 <- newlist1 %>%
+#   filter(standby1 == 1)
+#   
+# newlist2 <- newlist %>% filter(standby == 1) %>%
+#   mutate(standby1 = case_when(
+#     any(outcome_date >= status_date & outcome_date <= CANHX_END_DT) ~ 0,
+#     TRUE ~ 1))
+
+# newlist2.1 <- newlist2 %>%
+#   filter(standby1 == 0) %>%
+#   filter(row_number() <= min(which(outcome_date >= status_date & outcome_date <= CANHX_END_DT)))
+# 
+# newlist2.2 <- newlist2 %>%
+#   filter(standby1 == 1)
+
+#newlist <- rbind(newlist1.1, newlist1.2, newlist2.1, newlist2.2) %>% group_by(PX_ID) %>%
+#  mutate(CANHX_STAT_CD_REV = case_when(
+#    CANHX_STAT_CD == 2999 ~ lag(CANHX_STAT_CD),
+#    TRUE ~ CANHX_STAT_CD)) %>%
+#  mutate(CANHX_STAT_CD_REV = case_when(
+#    is.na(CANHX_STAT_CD_REV) ~ 2999,
+#    TRUE ~ CANHX_STAT_CD_REV)) %>%
+#  mutate(Last_Status = case_when(
+#    CANHX_STAT_CD_REV == 1110 | CANHX_STAT_CD_REV == 2110 ~ 1,
+#    CANHX_STAT_CD_REV == 1120 | CANHX_STAT_CD_REV == 2120 ~ 2,
+#    CANHX_STAT_CD_REV == 2130 ~ 3,
+#    CANHX_STAT_CD_REV == 2140 ~ 4,
+#    CANHX_STAT_CD_REV == 2150 ~ 5,
+#    CANHX_STAT_CD_REV == 2160 ~ 6,
+#    TRUE ~ "Inactive"))
+
+fulldata <- full_data %>% left_join(cand_list %>% select(PX_ID, dlvad_eligible, VadBrandId, OtherSpecify), by = "PX_ID")
+  
+fulldata <- fulldata %>% left_join(cand_thor24 %>% select(PX_ID, CAN_LISTING_DT, CAN_REM_DT, CAN_REM_CD, CAN_INIT_ACT_STAT_CD, CAN_RACE, CAN_ETHNICITY_SRTR, CAN_GENDER, CAN_ABO, CAN_DGN, CAN_AGE_AT_LISTING, CAN_AGE_IN_MONTHS_AT_LISTING, CAN_BMI, CAN_PRIMARY_PAY, CAN_FUNCTN_STAT, CAN_PCW_MEAN, CAN_HGT_CM, CAN_WGT_KG, CAN_CARDIAC_OUTPUT, CAN_LISTING_CTR_CD), by = "PX_ID") %>%
+  mutate(mcs_date = pmin(first_iabp, first_impella, na.rm = TRUE)) %>% group_by(PX_ID) %>%
+  mutate(mcs_type = case_when(
+    MCS == "IABP" ~ "IABP",
+    TRUE ~ "PEVAD")) %>%
+    ungroup()
+
+new_list <- fulldata %>%
+  mutate(time_from_listing_to_mcs = as.numeric(difftime(mcs_date, CAN_LISTING_DT, units = "days")),
+         sex = ifelse(CAN_GENDER == "M", "Male", "Female"),
+         sex = factor(sex, levels = c("Male", "Female")),
+         bmi = case_when(
+           CAN_BMI < 18 ~ "Underweight",
+           CAN_BMI >= 18 & CAN_BMI < 25 ~ "Normal",
+           CAN_BMI >= 25 & CAN_BMI < 30 ~ "Overweight",
+           CAN_BMI >= 30 ~ "Obese",
+           TRUE ~ "Unknown"),
+         bmi = factor(bmi, levels = c("Normal", "Underweight", "Overweight", "Obese", "Unknown")),
+         race = case_when(
+           is.na(CAN_RACE) & CAN_ETHNICITY_SRTR == "LATINO" ~ "Hispanic/Latino",
+           CAN_RACE == 8 & CAN_ETHNICITY_SRTR == "NLATIN" ~ "White",
+           CAN_RACE == 16 & CAN_ETHNICITY_SRTR == "NLATIN" ~ "Black",
+           CAN_RACE == 64 & CAN_ETHNICITY_SRTR == "NLATIN" ~ "Asian",
+           TRUE ~ "Other"),
+         race = factor(race, levels = c("White", "Black", "Hispanic/Latino", "Asian", "Other")),
+         #Kenley changes--may not want to use approximation of 30.44 days in a month--there are different ways to do this.
+         #age_at_listing = CAN_AGE_AT_LISTING,
+         #age_at_mcs = floor(CAN_AGE_AT_LISTING + time_from_listing_to_mcs / 365.25),
+         age_at_listing = floor(CAN_AGE_IN_MONTHS_AT_LISTING/12),
+         age_at_mcs = floor((CAN_AGE_IN_MONTHS_AT_LISTING + (time_from_listing_to_mcs / 30.44)) / 12),
+         functional = case_when(
+           (CAN_FUNCTN_STAT == 2010 | CAN_FUNCTN_STAT == 2020 | CAN_FUNCTN_STAT == 2030 | CAN_FUNCTN_STAT == 2040) ~ "Low",
+           (CAN_FUNCTN_STAT == 2050 | CAN_FUNCTN_STAT == 2060 | CAN_FUNCTN_STAT == 2070) ~ "Intermediate",
+           (CAN_FUNCTN_STAT == 2080 | CAN_FUNCTN_STAT == 2090 | CAN_FUNCTN_STAT == 2100) ~ "High",
+           TRUE ~ "Unknown"),
+         functional = factor(functional, levels = c("High", "Intermediate", "Low", "Unknown")),
+         payor = case_when(
+           CAN_PRIMARY_PAY %in% c(2,3,4,5,6,7,13) ~ "Public",
+           CAN_PRIMARY_PAY == 1 ~ "Private",
+           TRUE ~ "Other"),
+         blood_type = factor(
+           case_when(
+             CAN_ABO %in% c("A", "A1", "A2") ~ "A",
+             CAN_ABO %in% c("A1B", "A2B") ~ "AB",
+             TRUE ~ CAN_ABO)),
+         payor = factor(payor, levels = c("Private", "Public", "Other")),
+         diagnosis = case_when(
+          CAN_DGN > 999 & CAN_DGN < 1007 ~ "Dilated Cardiomyopathy, Non-Ischemic",
+          CAN_DGN == 1007 | CAN_DGN == 1200 ~ "Ischemic Cardiomyopathy",
+          CAN_DGN > 1048 & CAN_DGN < 1100 ~ "Restrictive Cardiomyopathy",
+          TRUE ~ "Other"),
+         diagnosis = factor(diagnosis, levels = c("Dilated Cardiomyopathy, Non-Ischemic", "Ischemic Cardiomyopathy", 
+                                                  "Restrictive Cardiomyopathy", "Other")),
+         pcwp = CAN_PCW_MEAN,
+         body_surface_area = 0.007184 * (CAN_HGT_CM)^(0.725) * CAN_WGT_KG^(0.425),
+         cardiac_index = as.numeric(CAN_CARDIAC_OUTPUT/body_surface_area),
+         cardiac_index = ifelse(cardiac_index > 10, NA, cardiac_index)) %>%
+  select(-c("CAN_INIT_ACT_STAT_CD", "CAN_RACE", "CAN_ETHNICITY_SRTR", "CAN_GENDER", "CAN_DGN", "CAN_AGE_AT_LISTING", "CAN_BMI",
+            "CAN_PRIMARY_PAY", "CAN_FUNCTN_STAT", "CAN_PCW_MEAN", "CAN_HGT_CM", "CAN_WGT_KG", "CAN_CARDIAC_OUTPUT"))
+
+new_list1 <- new_list %>% left_join(risk_strat_data_hr %>% select(PX_ID, ChangeDt, CurrTherVasoactiveSupport, CurrTherDopamine, CurrTherDobutamine, CurrTherMilrinone, CurrTherEpinephrine, CurrTherNorephinephrine, CurrTherVasopressin, CurrTherPulVas), by = "PX_ID") %>% group_by(PX_ID) %>% arrange(ChangeDt)
+
+new_list2 <- new_list1 %>%
+  mutate(data_within7days_mcs = case_when(
+    as.numeric(difftime(mcs_date, ChangeDt, units = "days")) <= 7 & as.numeric(difftime(mcs_date, ChangeDt, units = "days")) > 0 ~ 1,
+    TRUE ~ 0)) %>% group_by(PX_ID) %>%
+  mutate(standby = case_when(
+    any(data_within7days_mcs == 1) ~ 1,
+    TRUE ~ 0))
+
+new_list2.1 <- new_list2 %>% filter(standby == 0) %>% slice(1)
+new_list2.2 <- new_list2 %>% filter(standby == 1) %>% filter(data_within7days_mcs == 1) %>% slice(n())
+new_list2 <- rbind(new_list2.1, new_list2.2) %>% select(-c("standby"))  
+
+new_list3 <- new_list2 %>% left_join(risk_strat_data_hr %>% select(PX_ID, HemoDt, HemoObtainedOnSupport, HemoSbp, HemoDbp, HemoPcwp, HemoCardiacIndex, HemoSvo2), by = "PX_ID") %>% group_by(PX_ID) %>% arrange(HemoDt) %>%
+  mutate(data_before_outcome = case_when(
+    HemoDt >= as.POSIXct(mcs_date) & HemoDt <= as.POSIXct(unique_date) ~ 1,
+    TRUE ~ 0)) %>%
+  mutate(standby = case_when(
+    any(data_before_outcome == 1) ~ 1,
+    TRUE ~ 0)) %>%
+  mutate(HemoMAP = round(HemoDbp + (HemoSbp - HemoDbp) / 3))
+
+new_list3.1 <- new_list3 %>% filter(standby == 0) %>% slice(1)
+new_list3.2 <- new_list3 %>% filter(standby == 1) %>% filter(data_before_outcome == 1) %>% slice(n())
+new_list3 <- rbind(new_list3.1, new_list3.2) %>% select(-c("standby")) %>%
+  mutate(inotropes_before_mcs = case_when( #this code identifies which patients were on any inotropes within 7 days prior to MCS placement
+    data_within7days_mcs == 1 & (!is.na(CurrTherDopamine) | !is.na(CurrTherDobutamine) | !is.na(CurrTherMilrinone) | 
+                                   !is.na(CurrTherEpinephrine)) ~ 1,
+    TRUE ~ 0)) %>%
+  mutate(extension_hemo_eligible = case_when(
+    data_before_outcome == 1 & (HemoMAP < 60 | HemoPcwp > 15 | HemoSvo2 < 50 | HemoCardiacIndex < 2) ~ 1,
+    TRUE ~ 0)) %>%
+  mutate(hemo_measure_outcome_time = as.numeric(difftime(unique_date, HemoDt, units = "days"))) %>%
+  mutate(high_dose_inotrope = case_when(
+    inotropes_before_mcs == 1 & (CurrTherDobutamine >= 7.5 | CurrTherMilrinone >= 0.5 | CurrTherEpinephrine >= 0.02) ~ 1,
+    inotropes_before_mcs == 0 ~ NA,
+    TRUE ~ 0)) %>%
+  mutate(multi_agent_low_dose_inotropes = case_when(
+    inotropes_before_mcs == 1 & high_dose_inotrope != 1 & ((CurrTherDobutamine >= 3 & CurrTherMilrinone >= 0.25) | (CurrTherDobutamine >= 3 & CurrTherEpinephrine >= 0.01) | (CurrTherDobutamine >= 3 & CurrTherDopamine >= 3) | (CurrTherMilrinone >= 0.25 & CurrTherEpinephrine >= 0.01) | (CurrTherMilrinone >= 0.25 & CurrTherDopamine >= 3) |  (CurrTherEpinephrine >= 0.01 & CurrTherDopamine >= 3)) ~ 1,
+    inotropes_before_mcs == 0 ~ NA,
+    TRUE ~ 0)) %>%
+  mutate(LVAD = case_when(
+    dLVAD == "Durable LVAD" & VadBrandId == 224 ~ "HeartWare HVAD (Medtronic)",
+    dLVAD == "Durable LVAD" & (VadBrandId == 236 | VadBrandId == 999) ~ "HeartMate 3 LVAD (Abbott)",
+    TRUE ~ NA))
+
+```
+
+
+```{r table1}
+
+fortable1 <- new_list3 %>% ungroup() %>% left_join(cand_list %>% select(PX_ID, PEVAD, IabpWithHemo, McsdWithHemo), by = "PX_ID") %>%
+  mutate(
+    mcs_with_hemo = case_when( #This variable determines whether candidates qualified for Status 2 by meeting hemodynamic criteria as described in OPTN Policy 6 -- this variable was pulled from status 2 justification forms
+      mcs_type == "IABP" ~ IabpWithHemo,
+      TRUE ~ McsdWithHemo))
+
+var_label_list <- list(age_at_listing = "Age at Listing (Years)",
+                       age_at_mcs = "Age at MCS Device Placement (Years)",
+                       pcwp = "Pulmonary Capillary Wedge Pressure",
+                       mcs_with_hemo = "Had Qualifying Hemodynamic Measurements",
+                       cardiac_index = "Cardiac Index",
+                       bmi = "BMI",
+                       sex = "Sex",
+                       race = "Race",
+                       blood_type = "Blood Type",
+                       functional = "Functional Status",
+                       payor = "Insurance Type",
+                       diagnosis = "Primary Diagnosis",
+                       inotropes_before_mcs = "On Inotropes Within 7 Days Before MCS Placement",
+                       high_dose_inotrope = "Single-Agent High-Dose Inotrope",
+                       multi_agent_low_dose_inotropes = "2 or More Low-Dose Inotropes",
+                       mcs_type = "Mechanical Circulatory Support Device")
+labelled::var_label(fortable1) <- var_label_list
+
+
+fortable1 %>%
+  dplyr::select(
+    age_at_mcs, mcs_with_hemo, sex, race, bmi, blood_type, functional, payor, diagnosis, inotropes_before_mcs, 
+    high_dose_inotrope, multi_agent_low_dose_inotropes, mcs_type) %>%
+  tbl_summary(by = mcs_type, digits = list(all_categorical() ~ c(0, 1)),
+              label = list(high_dose_inotrope = "Single-Agent High-Dose Inotrope",
+                           multi_agent_low_dose_inotropes = "2 or More Low-Dose Inotropes")) %>%
+  add_p(test.args = all_tests("chisq.test") ~ list(workspace=2e7)) %>%
+  add_overall() %>%
+  remove_row_type(variables = c(age_at_mcs, high_dose_inotrope, multi_agent_low_dose_inotropes), 
+                  type = "missing", level_value = ("(Missing)")) %>%
+  modify_column_indent(columns = label,
+                       rows = variable %in% c("high_dose_inotrope", "multi_agent_low_dose_inotropes")) %>%
+  as_gt()
+
+table(fortable1$MCS, fortable1$PEVAD)
+table(fortable1$MCS, fortable1$mcs_with_hemo)
+
+
+pre_inotropes <- fortable1 %>% select(PX_ID, MCS, dLVAD, Outcome, date_of_first_status2, inotropes_before_mcs, high_dose_inotrope, multi_agent_low_dose_inotropes, mcs_with_hemo) %>% 
+  mutate(
+    qualifying_inotropes = ifelse(high_dose_inotrope == 1 | multi_agent_low_dose_inotropes == 1, 1, 0)) %>% 
+  filter(qualifying_inotropes == 1) %>% left_join(just_form_hr_stat2 %>% select(PX_ID, McsdCardiacIndexInotropeSup, IabpCardiacIndexInotropeSup, JustId), by = "PX_ID") %>% left_join(just_form_hr %>% select(JustId, Exception, listing_description, FormEffectiveDt), by = "JustId") %>% group_by(PX_ID) %>% arrange(FormEffectiveDt) %>% slice(1) %>% mutate(
+    measurements_with_tmcs = ifelse(McsdCardiacIndexInotropeSup == "Y" | IabpCardiacIndexInotropeSup == "Y", 1, 0)
+  )
+
+left_join(just_form_hr_stat1 %>% select(PX_ID, JustId, CriteriaEcmoSupport, CriteriaBivadSupport, CriteriaMcsdSupport, VentricularEpisode), by = "PX_ID") %>%
+  left_join(just_form_hr %>% select(JustId, Exception, listing_description, FormEffectiveDt), by = "JustId")
+
+
+
+
+#the following code identifies all status 2 extension forms
+status_extensions <- just_form_hr_stat2 %>% left_join(just_form_hr %>% select(JustId, FormEffectiveDt, listing_description), by = "JustId") %>% 
+  filter(listing_description == "Status 2 Extension")
+
+status2_extension <- fortable1 %>% left_join(status_extensions, by = "PX_ID") %>%
+  select(PX_ID, MCS, dLVAD, Outcome, unique_date, unique_event, date_of_first_status2, list_time, FormEffectiveDt, ChangeDt.y, listing_description) %>% 
+  rename(extension_dt = ChangeDt.y) %>% group_by(PX_ID) %>% arrange(extension_dt) %>%
+  mutate(
+    extension_dt = as.Date(extension_dt, origin = "1970-01-01"),
+    date_of_first_status2 = as.Date(date_of_first_status2, origin = "1970-01-01"),
+    time_to_extension = as.numeric(difftime(extension_dt, date_of_first_status2, units = "days")),
+    indexofextension = which(time_to_extension >= 0) [1],
+    indexofextension = ifelse(is.na(indexofextension), 1, indexofextension),
+    listing_description = case_when(
+      time_to_extension > 0 & time_to_extension <= 14 & listing_description == "Status 2 Extension" ~ "Status 2 Extension",
+      TRUE ~ NA)) %>% #this code calculates the time that has passed from date of obtaining Status 2 to when the Status 2 extension is activated. To allow for any delay in review of Status 2 extensions, we have allowed for review up to 21 days even though Status 2 expires after 14 days.
+  filter(row_number() == indexofextension)
+
+
+
+just_extensions <- status2_extension %>% filter(listing_description == "Status 2 Extension")
+
+
+status2_extension <- status2_extension %>% 
+  mutate(
+    eligible_for_extension = case_when(
+      Outcome == "Remains on Waitlist" | !is.na(FormEffectiveDt) | (Outcome != "Remains on Waitlist" & list_time > 14) ~ 1,
+      TRUE ~ 0),
+    listing_description = ifelse(listing_description == "Status 2 Extension" & is.na(FormEffectiveDt), NA, listing_description)
+    )
+
+lol <- status2_extension %>% filter(eligible_for_extension == 1)
+
+#Identifies how many candidates who obtained Status 2 extension actually received a durable LVAD.
+table(just_extensions$dLVAD)
+
+
+```
+
+
+
+```{r fig1}
+
+table(fortable1$prelistingmcs)
+
+#Identifies the patients who obtained Status 2 the same day they got an IABP or PEVAD
+mcs_before_listing <- fortable1 %>% filter(prelistingmcs == 1) %>% mutate(
+  time_from_listing_to_status2 = as.numeric(difftime(date_of_first_status2, CAN_LISTING_DT, units = "days"))
+)
+table(mcs_before_listing$MCS)
+median(mcs_before_listing$time_from_mcs_to_status2)
+median(fortable1$time_from_mcs_to_status2)
+
+
+#Identifies the patients who obtained Status 2 >0 days after they got an IABP or PEVAD and looks at what status they had at temporary MCS placement
+mcs_at_or_after_listing <- fortable1 %>% filter(prelistingmcs == 0) %>% 
+  mutate(status_before_mcs = case_when(
+    is.na(status_before_mcs) ~ "Not on Waitlist",
+    TRUE ~ status_before_mcs))
+
+#This code identifies the patients who were status 1 prior to MCS placement and why they were status 1 (all of them were on ECMO)
+status1_before_mcs <- mcs_at_or_after_listing %>% filter(status_before_mcs == 1) %>%
+  select(PX_ID, date_of_mcs, date_of_status_before_mcs) %>% left_join(just_form_hr_stat1 %>% select(PX_ID, JustId, CriteriaEcmoSupport, CriteriaBivadSupport, CriteriaMcsdSupport, VentricularEpisode), by = "PX_ID") %>%
+  left_join(just_form_hr %>% select(JustId, Exception, listing_description, FormEffectiveDt), by = "JustId") %>%
+  filter(FormEffectiveDt == date_of_status_before_mcs)
+
+
+
+table(mcs_at_or_after_listing$status_before_mcs)
+table(mcs_at_or_after_listing$status_before_mcs, mcs_at_or_after_listing$MCS)
+table(mcs_at_or_after_listing$MCS)
+
+median(mcs_at_or_after_listing$time_from_mcs_to_status2)
+median(mcs_at_or_after_listing$listing_to_mcs_time)
+
+mcs_at_listing <- mcs_at_or_after_listing %>% filter(listing_to_mcs_time == 0)
+
+#Code to see the patients who were inactive or status 6 at the time of temporary MCS placement
+status6_at_mcs <- mcs_at_or_after_listing %>% filter(status_before_mcs == 6 | status_before_mcs == "Inactive")
+median(status6_at_mcs$time_from_mcs_to_status2)
+
+table(fortable1$MCS, fortable1$Outcome)
+table(fortable1$Outcome)
+
+#Code to see all transplanted patients and calculate median time from Status 2 designation to transplantation.
+transplants <- fortable1 %>% filter(Outcome == "Transplanted")
+median(transplants$list_time)
+
+#Code for figure 1 --> Distribution of the statuses of the 4020 candidates who received Status 2 >0 days after getting IABP/PEVAD
+ggplot(data = mcs_at_or_after_listing, aes(x = status_before_mcs)) + 
+  geom_bar(aes(fill = mcs_type), color = "black", linewidth = 0.3, position = position_stack(reverse = TRUE)) +
+  theme_classic() +
+  labs(x = "Status", y = "Number of Candidates") +
+  scale_fill_discrete(name = "Temporary MCS") +
+  scale_y_continuous(breaks = seq(0, 1000, by = 200)) +
+  scale_fill_manual(name = "", values = c("#ae6320", "#C3C1C1")) +
+  theme(axis.text.x = element_text(size = 18),
+        axis.title.x = element_text(size = 20),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 20))
+
+
+#Code to isolate just patients who got a durable LVAD, stratifying by MCS type and eventual outcome. Calculates median time from getting Status 2 to durable LVAD
+LVAD <- fortable1 %>% filter(dLVAD == "Durable LVAD")
+table(LVAD$LVAD)
+table(LVAD$MCS)
+table(LVAD$Outcome)
+median(LVAD$time_from_status2_to_lvad)
+
+#Code to identify the patients who had both IABP and PEVAD simultaneously. 
+both_mcs <- fortable1 %>% filter(post_iabp == 1 & post_impella == 1) %>%
+  mutate(
+    time_from_first_to_second = case_when(
+      first_device == "iabp" ~ as.numeric(difftime(first_impella, first_iabp, units = "days")),
+      first_device == "impella" ~ as.numeric(difftime(first_iabp, first_impella, units = "days"))))
+  
+
+#Code to identify the patients who had IABP first then PEVAD. Tells us what actual devices were obtained.
+iabp_then_impella <- both_mcs %>% filter(first_device == "iabp")
+table(iabp_then_impella$PEVAD)
+median(iabp_then_impella$time_from_first_to_second)
+
+impella_then_iabp <- both_mcs %>% filter(first_device == "impella")
+median(impella_then_iabp$time_from_first_to_second)
+
+
+```
+
+```{r figure 3}
+
+#The following code creates a distribution of statuses at the time of transplant only for the candidates who received a heart transplant. This graph was not included in the manuscript.
+transplanted <- fortable1 %>% filter(Outcome == "Transplanted") %>% filter(!is.na(status)) %>%
+  group_by(status) %>%
+  summarise(count = n()) %>%
+  mutate(Label = paste0("(", format(round(count / sum(count) * 100, 1), nsmall = 1), "%)")) %>%
+  mutate(Outcome = "Transplanted Candidates")
+
+ggplot(data = transplanted, aes(x = status)) + 
+  geom_bar(stat = "identity", aes(y = count), position = "dodge") +
+  geom_text(aes(y = count, label = Label),
+            vjust = -0.5,
+            size = 12/.pt) +
+  theme_classic() +
+  labs(x = "Status", y = "Number of Candidates")
+
+
+#This code creates a distribution of statuses at the time of achieving the waitlisted outcomes only for non-transplanted candidates. This is figure 3 in the manuscript. I did not include transplanted candidates because the bar for transplant, at n > 3000, is literally so large compared to those of the other outcomes that you can't even make out the stratification. I feel like the utility of this plot is not high at all, but I wonder what your thoughts are.
+remainsonwaitlist <- fortable1 %>% filter(Outcome == "Remains on Waitlist") %>% mutate(
+  dLVAD = case_when(
+    is.na(dLVAD) ~ "No Durable LVAD",
+    TRUE ~ dLVAD
+  )
+)
+  # group_by(status)
+
+ggplot(data = remainsonwaitlist, aes(x = status)) + 
+  geom_bar(aes(fill = dLVAD), color = "black", linewidth = 0.3, position = position_stack(reverse = TRUE)) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  scale_fill_manual(name = "", values = c("#FA9E4D", "#b8a370")) +
+  labs(x = "Status", y = "Number of Candidates") +
+  theme(axis.text.x = element_text(size = 18),
+        axis.title.x = element_text(size = 20),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 20))
+#+
+#  scale_fill_discrete(name = "Status")
+
+table(remainsonwaitlist$dLVAD, remainsonwaitlist$status)
+table(remainsonwaitlist$dLVAD)
+
+
+```
+
+
+```{r figure 4}
+
+#This code stratifies all 5,288 patients by whether or not they got a durable LVAD
+receivedlvad <- fortable1 %>%
+  mutate(new_outcome = case_when(
+    dLVAD == "Durable LVAD" ~ "Received Durable LVAD",
+    TRUE ~ "Did Not Receive Durable LVAD"))
+
+receivedlvad$new_outcome <- factor(receivedlvad$new_outcome, levels = c("Did Not Receive Durable LVAD", "Received Durable LVAD"))
+
+number <- receivedlvad %>% group_by(CAN_LISTING_CTR_CD) %>%
+  summarise(n = n())
+
+receivedlvad <- receivedlvad %>% left_join(number) %>% ungroup() %>% group_by(CAN_LISTING_CTR_CD) %>% arrange(n, CAN_LISTING_CTR_CD)
+  
+groups = receivedlvad$CAN_LISTING_CTR_CD %>% unique
+i = 0
+receivedlvad$center = NA
+for (g in groups) {
+  i = i + 1
+  receivedlvad[receivedlvad$CAN_LISTING_CTR_CD == g, ]$center = i
+}
+
+#Plots the per-center distribution of candidates, stratified by durable LVAD implantation rate
+caterpillarplot <- ggplot(receivedlvad, aes(x = center, fill = new_outcome)) +
+  geom_bar(position = "stack", stat = "count", width = 0.8) +
+  theme_classic() +
+  theme(legend.position = "bottom") + 
+  theme(axis.text.x = element_text(size = 18),
+        axis.title.x = element_text(size = 20),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 20)) +
+  labs(x = "U.S. Transplant Centers", y = "Number of Candidates") +
+  scale_x_continuous(n.breaks = 7) +
+  scale_fill_manual(name = "", values = c("#b8a370", "#660000")) + 
+  guides(fill = guide_legend(nrow=1, byrow=TRUE))
+
+#Calculates all the rates of durable LVAD implantation by center
+rates <- receivedlvad %>% ungroup() %>% group_by(CAN_LISTING_CTR_CD) %>%
+  summarize(
+    prop_lvad_center = sum(new_outcome == "Received Durable LVAD") / n(),
+    number_lvad = sum(new_outcome == "Received Durable LVAD"),
+    prop_lvad_whole = sum(new_outcome == "Received Durable LVAD") / 174) %>% 
+  arrange(-number_lvad) %>%
+  mutate(Cum = cumsum(number_lvad)) %>%
+  mutate(CumProp = cumsum(prop_lvad_whole))
+
+median(rates$prop_lvad_center)
+
+
+```
+
+
+``` {r figure 5}
+
+#This code stratifies all 5,288 patients by whether or not they got a durable LVAD
+inotropes <- fortable1 %>%
+  mutate(inotropic_support = case_when(
+    high_dose_inotrope == 1 ~ "Single-Agent High-Dose Inotropic Support",
+    multi_agent_low_dose_inotropes == 1 & high_dose_inotrope != 1 ~ "Multi-Agent Low-Dose Inotropic Support",
+    inotropes_before_mcs == 1 & multi_agent_low_dose_inotropes != 1 & high_dose_inotrope != 1 ~ "Inotropic Support, Doses < Status 3 Criteria",
+    TRUE ~ "No Inotropic Support"))
+    
+
+inotropes$inotropic_support <- factor(inotropes$inotropic_support, levels = c("No Inotropic Support", "Inotropic Support, Doses < Status 3 Criteria", "Multi-Agent Low-Dose Inotropic Support", "Single-Agent High-Dose Inotropic Support"))
+
+number <- inotropes %>% group_by(CAN_LISTING_CTR_CD) %>%
+  summarise(n = n())
+
+inotropes <- inotropes %>% left_join(number) %>% ungroup() %>% group_by(CAN_LISTING_CTR_CD) %>% arrange(n, CAN_LISTING_CTR_CD)
+  
+groups = inotropes$CAN_LISTING_CTR_CD %>% unique
+i = 0
+inotropes$center = NA
+for (g in groups) {
+  i = i + 1
+  inotropes[inotropes$CAN_LISTING_CTR_CD == g, ]$center = i
+}
+
+#Plots the per-center distribution of candidates, stratified by durable LVAD implantation rate
+inotropesplot <- ggplot(inotropes, aes(x = center, fill = inotropic_support)) +
+  geom_bar(position = "stack", stat = "count", width = 0.8) +
+  theme_classic() +
+  theme(legend.position = "bottom") + 
+  theme(axis.text.x = element_text(size = 18),
+        axis.title.x = element_text(size = 20),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 20)) +
+  labs(x = "U.S. Transplant Centers", y = "Number of Candidates") +
+  scale_x_continuous(n.breaks = 7) +
+  scale_fill_manual(name = "", values = c("#b8a370", "#660000", "#ae6320", "#C3C1C1")) + 
+  guides(fill = guide_legend(nrow = 2, byrow=TRUE))
+
+#Calculates all the rates of durable LVAD implantation by center
+
+
+inotrope_rates <- inotropes %>% ungroup %>% group_by(CAN_LISTING_CTR_CD) %>%
+  summarize(
+    number_of_patients = sum(n()),
+    prop_ino_center = sum(inotropic_support == "Multi-Agent Low-Dose Inotropic Support" | inotropic_support == "High-Dose Inotropic Support") / n(),
+    number_ino = sum(inotropic_support == "Multi-Agent Low-Dose Inotropic Support" | inotropic_support == "High-Dose Inotropic Support"),
+    number_not_ino = sum(inotropic_support == "Inotropic Support, Doses < Status 3 Criteria" | inotropic_support == "No Inotropic Support"),
+    prop_ino_whole = sum(inotropic_support == "Multi-Agent Low-Dose Inotropic Support" | inotropic_support == "High-Dose Inotropic Support") / 432) %>% 
+  arrange(-number_ino) %>%
+  mutate(Cum = cumsum(number_ino)) %>%
+  mutate(CumProp = cumsum(prop_ino_whole))
+
+median(inotrope_rates$prop_ino_center)
+
+centers_wo_ino <- inotrope_rates %>% filter(number_ino == 0)
+sum(inotrope_rates$number_of_patients)
+
+chisqtable <- inotrope_rates %>% select(number_ino, number_not_ino)
+chisq.test(chisqtable)
+
+
+
+
+
+```
